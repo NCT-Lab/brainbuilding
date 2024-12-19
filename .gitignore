@@ -1,0 +1,8 @@
+venv/
+hand move/
+new-data/
+validation_data/
+training_data/
+__pycache__/
+*.npz
+*.pickle
