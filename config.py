@@ -58,22 +58,48 @@ VALIDATION_DATA_EVENT_NAMES = [
 ]
 ALL_EVENT_NAMES = list(set(TRAINING_DATA_EVENT_NAMES + VALIDATION_DATA_EVENT_NAMES))
 
+CSP_METRIC = 'riemann'
 
-non_class_filter = lambda x: (
-    'Rest' not in x 
-    and 'Animation' not in x 
-    and 'imagin' not in x 
-    and 'real' not in x
-)
+# non_class_filter = lambda x: (
+#     'Rest' not in x 
+#     and 'Animation' not in x 
+#     and 'Background' not in x
+# )
+one_classes = [
+    'Animation@imagin/move/anim@left/hand',
+    'Animation@imagin/move/anim@right/hand',
+]
+zero_classes = [
+    # 'Arrow@imagin/move/anim@left/hand',
+    # 'Arrow@imagin/move/anim@right/hand',
+    # 'Arrow@real/move/anim@left/hand',
+    # 'Arrow@real/move/anim@right/hand',
+    # 'Background@@',
+    # 'Cross@imagin/move/anim@left/hand',
+    # 'Cross@imagin/move/anim@right/hand',
+    # 'Cross@real/move/anim@left/hand',
+    # 'Cross@real/move/anim@right/hand',
+    # 'Instruction@@',
+    # 'MFI@@',
+    # 'Pause@@',
+    'Rest@imagin/move/anim@left/hand',
+    'Rest@imagin/move/anim@right/hand',
+    # 'Rest@real/move/anim@left/hand',
+    # 'Rest@real/move/anim@right/hand',
+    # 'VAS@@'
+]
 
-zero_filter = lambda x: 'Rest' in x
-one_filter = lambda x: 'Animation' in x
-
+# STANDARD_EVENT_NAME_TO_ID_MAPPING = {
+#     i: 100 if non_class_filter(i) else (
+#         0 if zero_filter(i) else (
+#             1 if one_filter(i) else 2
+#         )
+#     )
+#     for i in ALL_EVENT_NAMES
+# }
 STANDARD_EVENT_NAME_TO_ID_MAPPING = {
-    i: 100 if non_class_filter(i) else (
-        0 if zero_filter(i) else (
-            1 if one_filter(i) else 100
-        )
+    i: 0 if i in zero_classes else (
+        1 if i in one_classes else 2
     )
     for i in ALL_EVENT_NAMES
 }

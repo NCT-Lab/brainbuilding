@@ -9,6 +9,9 @@ from eye_removal import EyeRemoval, create_standard_eog_channels
 from config import PICK_CHANNELS, ND_CHANNELS_MASK, ORDER, REMOVE_HEOG, REMOVE_VEOG, LOW_FREQ, HIGH_FREQ
 import os
 
+RAW_DATA_DIR = "new-dataset"
+TRAINING_DATA_DIR = "training_data_2"
+
 warnings.filterwarnings('ignore')
 DOWNSAMPLE_SFREQ = 250 
 
@@ -257,16 +260,16 @@ def process_new_subject_data(subject_id):
     raw.save(f'validation_data/{subject_id}.fif', overwrite=True)
 
 def main():
-    os.makedirs('validation_data', exist_ok=True)
-    subject_ids = [f for f in os.listdir("new-data") if f.isdigit()]
-    subject_ids = sorted(subject_ids)
-    for subject_id in subject_ids:
-        process_new_subject_data(subject_id)
+    # os.makedirs('validation_data', exist_ok=True)
+    # subject_ids = [f for f in os.listdir("new-data") if f.isdigit()]
+    # subject_ids = sorted(subject_ids)
+    # for subject_id in subject_ids:
+    #     process_new_subject_data(subject_id)
     # exit() 
     
-    subject_ids = [f for f in os.listdir("hand move") if f.isdigit()]
+    subject_ids = [f for f in os.listdir(RAW_DATA_DIR) if f.isdigit()]
     subject_ids = sorted(subject_ids)   
-    os.makedirs('training_data', exist_ok=True)
+    os.makedirs(TRAINING_DATA_DIR, exist_ok=True)
     for subject_id in subject_ids:
         process_subject_data(subject_id)
 

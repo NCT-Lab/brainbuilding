@@ -7,8 +7,8 @@ from scipy.signal import butter, filtfilt
 from sklearn.svm import SVC
 from sklearn.model_selection import GridSearchCV
 from sklearn.pipeline import Pipeline
-from sklearn.metrics import fbeta_score, make_scorer, precision_score, recall_score, accuracy_score, roc_auc_score
-from sklearn.model_selection import GroupKFold
+from sklearn.metrics import fbeta_score, make_scorer, precision_score, recall_score, accuracy_score, roc_auc_score, balanced_accuracy_score
+from sklearn.model_selection import GroupKFold, train_test_split
 import os
 from scipy import interpolate
 from pyriemann.estimation import Covariances
@@ -147,16 +147,17 @@ def extract_epochs_from_raw(raw: mne.io.Raw):
     print(f'One event names: {sorted(list(set(one_event_names)))}')
     # print(f'Event IDs: {event_ids}')
     for ind, (ts_idx, _, event_id) in enumerate(events[:-1]):  # Exclude last event
-        if event_id not in [0, 1, 2]:
+        if event_id not in [0, 1]:
             continue
         
         start_idx = ts_idx + sample_delay
         
         # search for the next event with different event_id
-        end_idx = [i for i in events[ind + 1:] if i[2] != event_id][0][0]
-        
-        # Calculate number of possible windows
-        # n_windows = (end_idx - start_idx - sample_window) // sample_step + 1
+        next_event = next((i for i in events[ind + 1:] if i[2] != event_id), None)
+        if next_event is None:
+            end_idx = len(data)
+        else:
+            end_idx = next_event[0]
         
         chunk_start = start_idx
         chunk_end = chunk_start + sample_window
@@ -210,13 +211,22 @@ def normalize_features(features, background_medians, subject_ids):
     return normalized_features
 
 def create_pipelines():
-    """Create simplified pipeline that works with pre-computed normalized features"""
+    """Create pipeline with AdaBoosted SVM"""
+    base_svm = SVC(
+        kernel='rbf',
+        probability=True,
+        C=0.696,
+        gamma=0.035,
+        class_weight='balanced'  # Add class weights to handle imbalance
+    )
+    
     steps = [
-        ("svm", SVC(kernel='rbf',
-                   probability=True,
-                   C=0.696,
-                   gamma=0.035,
-                   class_weight=None))
+        ("svm", AdaBoostClassifier(
+            estimator=base_svm,
+            n_estimators=50,
+            learning_rate=0.1,
+            algorithm='SAMME.R'
+        ))
     ]
     
     return Pipeline(steps=steps)
@@ -226,20 +236,16 @@ def main():
     raws_train = load_training_data()
     raws_val = load_validation_data()
     
-    # TODO: Extract epochs from all training subjects
     X = []
     y = []
     subject_ids = []
-    # subject_names = {}
     for raw in raws_train:
         X_train, y_train = extract_epochs_from_raw(raw['raw_data'])
         X.extend(X_train)
         y.extend(y_train)
         subject_ids.extend([raw['subject_id']] * len(y_train))
-        # subject_names[raw['subject_id']] = raw
     print(f'Subject IDs: {len(subject_ids)}')
     
-    # TODO: Extract epochs from all validation subjects
     X_val = []
     y_val = []
     subject_ids_val = []
@@ -257,101 +263,43 @@ def main():
     y_val = np.array(y_val)
     subject_ids_val = np.array(subject_ids_val)
     
-    # Separate background samples
-    background_mask = y == 2
-    train_mask = y != 2
-    
-    X_background = X[background_mask]
-    background_subjects = subject_ids[background_mask]
-    
-    X = X[train_mask]
-    y = y[train_mask]
-    subject_ids = subject_ids[train_mask]
-    
-    # Do the same for validation data
-    val_background_mask = y_val == 2
-    val_train_mask = y_val != 2
-    
-    X_val_background = X_val[val_background_mask]
-    val_background_subjects = subject_ids_val[val_background_mask]
-    
-    X_val = X_val[val_train_mask]
-    y_val = y_val[val_train_mask]
-    subject_ids_val = subject_ids_val[val_train_mask]
-    
     # Compute normalized augmented covariances
     print("\nComputing normalized augmented covariances...")
-    X_covs = compute_normalized_augmented_covariances(
+    X = compute_normalized_augmented_covariances(
         X, 
         subject_ids,
         None, 
         order=ORDER
     )
     
-    X_background_covs = compute_normalized_augmented_covariances(
-        X_background,
-        background_subjects,
-        None,
-        order=ORDER
-    )
-    
     # Create and fit CSP transformer outside the pipeline
-    # csp = CSPWithChannelSelection(nfilter=10, 
-    #                             metric="euclid",
-    #                             channels_mask=ND_CHANNELS_MASK,
-    #                             order=ORDER)
     csp = CSP(nfilter=10, 
               metric=CSP_METRIC,
               log=True)
-    csp.fit(X_covs, y)
+    csp.fit(X, y)
     
     # Compute features and background medians
-    features_log = csp.transform(X_covs)
-    # create a dataframe with features, labels and subject_ids
-    df = pd.DataFrame(features_log, columns=[f'feature_{i}' for i in range(features_log.shape[1])])
-    df['label'] = y
-    df['subject_id'] = subject_ids
-    df.to_csv('features_log.csv', index=False)
-    
-    csp = CSP(nfilter=10, 
-              metric=CSP_METRIC,
-              log=False)
-    csp.fit(X_covs, y)
-    # create a dataframe with features, labels and subject_ids
-    features_full = csp.transform(X_covs).reshape(X_covs.shape[0], -1)
-    df = pd.DataFrame(features_full, columns=[f'feature_{i}' for i in range(features_full.shape[1])])
-    df['label'] = y
-    df['subject_id'] = subject_ids
-    df.to_csv('features_full.csv', index=False)
-    
-    # serialize CSP filters matrix into csv
-    print(f'{csp.filters_.shape=}')
-    csp_filters = pd.DataFrame(csp.filters_)
-    csp_filters.to_csv('csp_filters.csv', index=False)
-    # background_medians = compute_background_medians(X_background_covs, csp, background_subjects)
-    
-    # Normalize features using background medians
-    # normalized_features = normalize_features(features, background_medians, subject_ids)
-    normalized_features = features_log
+    X = csp.transform(X)
     
     # Create simplified pipeline (without CSP)
     pipeline = create_pipelines()
     
     # Print data shapes and distributions
     print('Verification:')
-    print(f'Number of samples in X: {len(normalized_features)}')
+    print(f'Number of samples in X: {len(X)}')
     print(f'Number of samples in y: {len(y)}')
     print(f'Number of groups: {len(np.unique(subject_ids))}')
-    print(f"Features shape: {normalized_features.shape}")
+    print(f"Features shape: {X.shape}")
     print(f"Labels shape: {y.shape}")
     print(f"Unique groups: {np.unique(subject_ids)}")
     
     # Define scorers
     scorers = {
-        'precision': make_scorer(precision_score),
-        'recall': make_scorer(recall_score),
-        'accuracy': make_scorer(accuracy_score),
-        'auc': make_scorer(roc_auc_score)
+        'precision': make_scorer(precision_score, average='weighted'),
+        'recall': make_scorer(recall_score, average='weighted'),
+        'accuracy': make_scorer(balanced_accuracy_score),  # Use balanced accuracy
+        'auc': make_scorer(roc_auc_score, average='weighted', multi_class='ovr'),
+        'f1': make_scorer(fbeta_score, beta=1, average='weighted')
     }
     
     print("\nEvaluating best model configuration:")
@@ -360,26 +308,9 @@ def main():
     # Calculate metrics for each fold
     metrics = {name: [] for name in scorers}
     
-    # Create DataFrames for both log and full features
-    log_features_df = pd.DataFrame(features_log, columns=[f'log_feature_{i}' for i in range(features_log.shape[1])])
-    full_features_df = pd.DataFrame(features_full, columns=[f'feature_{i}' for i in range(features_full.shape[1])])
-    
-    # Add basic information to both DataFrames
-    for df in [log_features_df, full_features_df]:
-        df['label'] = y
-        df['subject_id'] = subject_ids
-    
-    # Dictionary to store cross-validation predictions
-    cv_predictions = {
-        'fold_indices': [],
-        'sample_indices': [],  # To match predictions with original samples
-        'predicted_labels': [],
-        'predicted_probas': [],
-    }
-    
     # Perform cross-validation and store predictions
-    for fold_idx, (train_idx, test_idx) in enumerate(cv.split(normalized_features, y, subject_ids)):
-        X_train, X_test = normalized_features[train_idx], normalized_features[test_idx]
+    for fold_idx, (train_idx, test_idx) in enumerate(cv.split(X, y, subject_ids)):
+        X_train, X_test = X[train_idx], X[test_idx]
         y_train, y_test = y[train_idx], y[test_idx]
         
         fold_pipeline = clone(pipeline)
@@ -387,20 +318,21 @@ def main():
         y_pred = fold_pipeline.predict(X_test)
         y_pred_proba = fold_pipeline.predict_proba(X_test)
         
-        # Store predictions with sample indices
-        cv_predictions['fold_indices'].extend([fold_idx] * len(test_idx))
-        cv_predictions['sample_indices'].extend(test_idx)
-        cv_predictions['predicted_labels'].extend(y_pred)
-        cv_predictions['predicted_probas'].extend(y_pred_proba)
-        
         # Calculate metrics for monitoring
         print(f"\nFold {fold_idx + 1} (subject {np.unique(subject_ids[test_idx])}):")
+        # Print class distribution for this fold
+        unique, counts = np.unique(y_test, return_counts=True)
+        print(f"Class distribution in test set: {dict(zip(unique, counts))}")
+        
         for metric_name, scorer in scorers.items():
             if metric_name == 'auc':
-                # For AUC we need probabilities of the positive class
-                score = roc_auc_score(y_test, y_pred_proba[:, 1])
-            else:
+                score = roc_auc_score(y_test, y_pred_proba[:, 1], average='weighted')
+            elif metric_name == 'accuracy':
                 score = scorer._score_func(y_test, y_pred)
+            elif metric_name == 'f1':
+                score = fbeta_score(y_test, y_pred, beta=1, average='weighted')
+            else:
+                score = scorer._score_func(y_test, y_pred, average='weighted')
             metrics[metric_name].append(score)
             print(f"{metric_name}: {score:.3f}")
     
@@ -413,35 +345,6 @@ def main():
         print(f"Std:  {np.std(scores_array):.3f}")
         print(f"Min:  {np.min(scores_array):.3f}")
         print(f"Max:  {np.max(scores_array):.3f}")
-    
-    # Train final model on all data and get predictions
-    pipeline.fit(normalized_features, y)
-    full_predictions = pipeline.predict(normalized_features)
-    full_probas = pipeline.predict_proba(normalized_features)
-    
-    # Add cross-validation predictions to both DataFrames
-    for df in [log_features_df, full_features_df]:
-        # Initialize prediction columns with NaN
-        df['cv_predicted_label'] = np.nan
-        df['cv_proba_class_0'] = np.nan
-        df['cv_proba_class_1'] = np.nan
-        df['cv_fold'] = np.nan
-        
-        # Fill in CV predictions
-        for idx, sample_idx in enumerate(cv_predictions['sample_indices']):
-            df.loc[sample_idx, 'cv_predicted_label'] = cv_predictions['predicted_labels'][idx]
-            df.loc[sample_idx, 'cv_proba_class_0'] = cv_predictions['predicted_probas'][idx][0]
-            df.loc[sample_idx, 'cv_proba_class_1'] = cv_predictions['predicted_probas'][idx][1]
-            df.loc[sample_idx, 'cv_fold'] = cv_predictions['fold_indices'][idx]
-        
-        # Add full dataset predictions
-        df['full_predicted_label'] = full_predictions
-        df['full_proba_class_0'] = [p[0] for p in full_probas]
-        df['full_proba_class_1'] = [p[1] for p in full_probas]
-    
-    # Save both feature tables
-    log_features_df.to_csv('features_log_with_predictions.csv', index=False)
-    full_features_df.to_csv('features_full_with_predictions.csv', index=False)
     
     # Save the trained pipeline and CSP transformer
     print("\nSaving pipeline and CSP transformer to trained_pipeline.pickle...")

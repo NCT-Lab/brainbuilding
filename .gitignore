@@ -1,8 +1,11 @@
 venv/
 hand move/
+new-dataset/
+training_data_2/
 new-data/
 validation_data/
 training_data/
 __pycache__/
 *.npz
+*.npy
 *.pickle
