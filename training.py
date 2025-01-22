@@ -32,8 +32,7 @@ from typing import TypedDict
 
 import matplotlib.pyplot as plt
 import pickle
-from eye_removal import EyeRemoval, create_standard_eog_channels
-from config import PICK_CHANNELS, ND_CHANNELS_MASK, ORDER, STANDARD_EVENT_NAME_TO_ID_MAPPING, CSP_METRIC
+from config import ORDER, STANDARD_EVENT_NAME_TO_ID_MAPPING, CSP_METRIC
 
 import glob
 import pathlib
@@ -43,34 +42,6 @@ warnings.filterwarnings('ignore')
 class SubjectRaw(TypedDict):
     subject_id: int
     raw_data: mne.io.Raw
-
-def load_training_data() -> list[SubjectRaw]:
-    """Load training data from training_data directory"""
-    training_files = glob.glob('training_data/*.fif')
-    result = []
-    
-    for file_path in training_files:
-        # Extract subject_id from filename
-        subject_id = int(pathlib.Path(file_path).stem)
-        # Load raw data
-        raw = mne.io.read_raw_fif(file_path, preload=True)
-        result.append(SubjectRaw(subject_id=subject_id, raw_data=raw))
-    
-    return result
-
-def load_validation_data() -> list[SubjectRaw]:
-    """Load validation data from validation_data directory"""
-    validation_files = glob.glob('validation_data/*.fif')
-    result = []
-    
-    for file_path in validation_files:
-        # Extract subject_id from filename
-        subject_id = int(pathlib.Path(file_path).stem)
-        # Load raw data
-        raw = mne.io.read_raw_fif(file_path, preload=True)
-        result.append(SubjectRaw(subject_id=subject_id, raw_data=raw))
-    
-    return result
 
 class AugmentedDataset(BaseEstimator, TransformerMixin):
     """This transformation creates an embedding version of the current dataset.
@@ -123,54 +94,7 @@ class CSPWithChannelSelection(CSP):
             
         return self
 
-def extract_epochs_from_raw(raw: mne.io.Raw):
-    """Extract epochs for Rest and Animation events using sliding windows"""
-    epochs_data = []
-    labels = []
-    data = raw.get_data()
-    zero_event_names = []
-    one_event_names = []
-    
-    sfreq = raw.info['sfreq']
-    print(f'SFREQ: {sfreq}')
-    sample_delay = int(1. * sfreq)  # Initial delay after event
-    sample_window = int(1. * sfreq)   # Window size
-    sample_step = int(0.8 * sfreq)   # Step size
-
-    events, event_ids = mne.events_from_annotations(raw, event_id=STANDARD_EVENT_NAME_TO_ID_MAPPING, verbose=False)
-    for k, v in event_ids.items():
-        if v == 0:
-            zero_event_names.append(k)
-        elif v == 1:
-            one_event_names.append(k)
-    print(f'Zero event names: {sorted(list(set(zero_event_names)))}')
-    print(f'One event names: {sorted(list(set(one_event_names)))}')
-    # print(f'Event IDs: {event_ids}')
-    for ind, (ts_idx, _, event_id) in enumerate(events[:-1]):  # Exclude last event
-        if event_id not in [0, 1, 2]:
-            continue
-        
-        start_idx = ts_idx + sample_delay
-        
-        # search for the next event with different event_id
-        end_idx = [i for i in events[ind + 1:] if i[2] != event_id][0][0]
-        
-        # Calculate number of possible windows
-        # n_windows = (end_idx - start_idx - sample_window) // sample_step + 1
-        
-        chunk_start = start_idx
-        chunk_end = chunk_start + sample_window
-        while chunk_end <= end_idx:
-            chunk = data[:, chunk_start:chunk_end]
-            epochs_data.append(chunk)
-            labels.append(event_id)
-            chunk_start = chunk_start + sample_step
-            chunk_end = chunk_start + sample_window
-    print(f'{np.unique([len(i[0]) for i in epochs_data])}')
-
-    return np.array(epochs_data), np.array(labels)
-
-def compute_normalized_augmented_covariances(X, groups, background_data, order=4):
+def compute_normalized_augmented_covariances(X, order=4):
     """Compute normalized augmented covariances for all samples using vectorized operations"""
     augmentation = AugmentedDataset(order=order, lag=8)
     cov = Covariances(estimator="oas")
@@ -182,36 +106,10 @@ def compute_csp_features(X, csp_transformer):
     """Compute CSP features for given samples using pre-fitted transformer"""
     return csp_transformer.transform(X)
 
-def compute_background_medians(X_background, csp_transformer, subject_ids):
-    """Compute median CSP features for background samples per subject"""
-    features = csp_transformer.transform(X_background)
-    unique_subjects = np.unique(subject_ids)
-    
-    background_medians = {}
-    for subject in unique_subjects:
-        subject_mask = subject_ids == subject
-        if np.any(subject_mask):
-            subject_features = features[subject_mask]
-            background_medians[subject] = np.median(subject_features, axis=0)
-    
-    return background_medians
-
-def normalize_features(features, background_medians, subject_ids):
-    """Normalize features using background medians per subject"""
-    normalized_features = np.zeros_like(features)
-    
-    for subject in background_medians:
-        subject_mask = subject_ids == subject
-        if np.any(subject_mask):
-            # Percent normalization relative to background median
-            # normalized_features[subject_mask] = (features[subject_mask] - background_medians[subject][None, :]) / background_medians[subject][None, :]
-            normalized_features[subject_mask] = features[subject_mask]
-            
-    return normalized_features
-
 def create_pipelines():
     """Create simplified pipeline that works with pre-computed normalized features"""
     steps = [
+        ("csp", CSP(nfilter=10, metric='riemann')),
         ("svm", SVC(kernel='rbf',
                    probability=True,
                    C=0.696,
@@ -223,126 +121,28 @@ def create_pipelines():
 
 def main():
     # Load processed data
-    raws_train = load_training_data()
-    raws_val = load_validation_data()
+    X = np.load('X.npy')
+    y = np.load('y.npy')
+    subject_ids = np.load('subject_ids.npy')
+    X = X[y != 2]
+    subject_ids = subject_ids[y != 2]
+    y = y[y != 2]
+    print(f"{np.unique(y)=}")
     
-    # TODO: Extract epochs from all training subjects
-    X = []
-    y = []
-    subject_ids = []
-    # subject_names = {}
-    for raw in raws_train:
-        X_train, y_train = extract_epochs_from_raw(raw['raw_data'])
-        X.extend(X_train)
-        y.extend(y_train)
-        subject_ids.extend([raw['subject_id']] * len(y_train))
-        # subject_names[raw['subject_id']] = raw
-    print(f'Subject IDs: {len(subject_ids)}')
-    
-    # TODO: Extract epochs from all validation subjects
-    X_val = []
-    y_val = []
-    subject_ids_val = []
-    for raw in raws_val:
-        X_val_train, y_val_train = extract_epochs_from_raw(raw['raw_data'])
-        X_val.extend(X_val_train)
-        y_val.extend(y_val_train)
-        subject_ids_val.extend([raw['subject_id']] * len(y_val_train))
-
-    X = np.array(X)
-    y = np.array(y)
-    subject_ids = np.array(subject_ids)
-    
-    X_val = np.array(X_val)
-    y_val = np.array(y_val)
-    subject_ids_val = np.array(subject_ids_val)
-    
-    # Separate background samples
-    background_mask = y == 2
-    train_mask = y != 2
-    
-    X_background = X[background_mask]
-    background_subjects = subject_ids[background_mask]
-    
-    X = X[train_mask]
-    y = y[train_mask]
-    subject_ids = subject_ids[train_mask]
-    
-    # Do the same for validation data
-    val_background_mask = y_val == 2
-    val_train_mask = y_val != 2
-    
-    X_val_background = X_val[val_background_mask]
-    val_background_subjects = subject_ids_val[val_background_mask]
-    
-    X_val = X_val[val_train_mask]
-    y_val = y_val[val_train_mask]
-    subject_ids_val = subject_ids_val[val_train_mask]
     
     # Compute normalized augmented covariances
     print("\nComputing normalized augmented covariances...")
-    X_covs = compute_normalized_augmented_covariances(
+    X = compute_normalized_augmented_covariances(
         X, 
-        subject_ids,
-        None, 
         order=ORDER
     )
-    
-    X_background_covs = compute_normalized_augmented_covariances(
-        X_background,
-        background_subjects,
-        None,
-        order=ORDER
-    )
-    
-    # Create and fit CSP transformer outside the pipeline
-    # csp = CSPWithChannelSelection(nfilter=10, 
-    #                             metric="euclid",
-    #                             channels_mask=ND_CHANNELS_MASK,
-    #                             order=ORDER)
-    csp = CSP(nfilter=10, 
-              metric=CSP_METRIC,
-              log=True)
-    csp.fit(X_covs, y)
-    
-    # Compute features and background medians
-    features_log = csp.transform(X_covs)
-    # create a dataframe with features, labels and subject_ids
-    df = pd.DataFrame(features_log, columns=[f'feature_{i}' for i in range(features_log.shape[1])])
-    df['label'] = y
-    df['subject_id'] = subject_ids
-    df.to_csv('features_log.csv', index=False)
-    
-    csp = CSP(nfilter=10, 
-              metric=CSP_METRIC,
-              log=False)
-    csp.fit(X_covs, y)
-    # create a dataframe with features, labels and subject_ids
-    features_full = csp.transform(X_covs).reshape(X_covs.shape[0], -1)
-    df = pd.DataFrame(features_full, columns=[f'feature_{i}' for i in range(features_full.shape[1])])
-    df['label'] = y
-    df['subject_id'] = subject_ids
-    df.to_csv('features_full.csv', index=False)
-    
-    # serialize CSP filters matrix into csv
-    print(f'{csp.filters_.shape=}')
-    csp_filters = pd.DataFrame(csp.filters_)
-    csp_filters.to_csv('csp_filters.csv', index=False)
-    # background_medians = compute_background_medians(X_background_covs, csp, background_subjects)
-    
-    # Normalize features using background medians
-    # normalized_features = normalize_features(features, background_medians, subject_ids)
-    normalized_features = features_log
-    
-    # Create simplified pipeline (without CSP)
-    pipeline = create_pipelines()
     
     # Print data shapes and distributions
     print('Verification:')
-    print(f'Number of samples in X: {len(normalized_features)}')
+    print(f'Number of samples in X: {len(X)}')
     print(f'Number of samples in y: {len(y)}')
     print(f'Number of groups: {len(np.unique(subject_ids))}')
-    print(f"Features shape: {normalized_features.shape}")
+    print(f"Features shape: {X.shape}")
     print(f"Labels shape: {y.shape}")
     print(f"Unique groups: {np.unique(subject_ids)}")
     
@@ -360,15 +160,6 @@ def main():
     # Calculate metrics for each fold
     metrics = {name: [] for name in scorers}
     
-    # Create DataFrames for both log and full features
-    log_features_df = pd.DataFrame(features_log, columns=[f'log_feature_{i}' for i in range(features_log.shape[1])])
-    full_features_df = pd.DataFrame(features_full, columns=[f'feature_{i}' for i in range(features_full.shape[1])])
-    
-    # Add basic information to both DataFrames
-    for df in [log_features_df, full_features_df]:
-        df['label'] = y
-        df['subject_id'] = subject_ids
-    
     # Dictionary to store cross-validation predictions
     cv_predictions = {
         'fold_indices': [],
@@ -378,11 +169,11 @@ def main():
     }
     
     # Perform cross-validation and store predictions
-    for fold_idx, (train_idx, test_idx) in enumerate(cv.split(normalized_features, y, subject_ids)):
-        X_train, X_test = normalized_features[train_idx], normalized_features[test_idx]
+    for fold_idx, (train_idx, test_idx) in enumerate(cv.split(X, y, subject_ids)):
+        X_train, X_test = X[train_idx], X[test_idx]
         y_train, y_test = y[train_idx], y[test_idx]
         
-        fold_pipeline = clone(pipeline)
+        fold_pipeline = create_pipelines()
         fold_pipeline.fit(X_train, y_train)
         y_pred = fold_pipeline.predict(X_test)
         y_pred_proba = fold_pipeline.predict_proba(X_test)
@@ -414,6 +205,7 @@ def main():
         print(f"Min:  {np.min(scores_array):.3f}")
         print(f"Max:  {np.max(scores_array):.3f}")
     
+    exit() 
     # Train final model on all data and get predictions
     pipeline.fit(normalized_features, y)
     full_predictions = pipeline.predict(normalized_features)

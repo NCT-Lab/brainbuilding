@@ -10,7 +10,7 @@ from config import PICK_CHANNELS, ND_CHANNELS_MASK, ORDER, REMOVE_HEOG, REMOVE_V
 import os
 
 RAW_DATA_DIR = "new-dataset"
-TRAINING_DATA_DIR = "training_data_2"
+TRAINING_DATA_DIR = "training_data"
 
 warnings.filterwarnings('ignore')
 DOWNSAMPLE_SFREQ = 250 
@@ -222,51 +222,31 @@ def process_subject_data(subject_id):
     print("")
     print(f"Processing subject {subject_id}")
     # Redirect stdout temporarily
-    protocol = ns.load(
-        f"hand move/{subject_id}/Task.json",
-        f"hand move/{subject_id}/{subject_id}.xdf"
+    protocol = ns.io.NeuroStim(
+        f"{RAW_DATA_DIR}/{subject_id}/Task.json",
+        f"{RAW_DATA_DIR}/{subject_id}/data.xdf",
+        "Brainbuilding-Events"
     )
     raw, _ = protocol.raw_xdf(
         annotation=True,
         eeg_stream_names=["NeoRec21-1247", "actiCHamp-23090108"],
         extended_annotation=True
     )
+    preprocess_subject_events(raw)
     process_raw(raw)
-    raw.save(f'training_data/{subject_id}.fif', overwrite=True)
+    raw.save(f'{TRAINING_DATA_DIR}/{subject_id}.fif', overwrite=True)
 
-def preprocess_new_subject_events(raw: mne.io.Raw):
+def preprocess_subject_events(raw: mne.io.Raw):
     raw.annotations.rename({
-        "Move@@left/hand": "Animation@imagin/move/anim@left/hand",
-        "Move@@right/hand": "Animation@imagin/move/anim@right/hand",
+        "Point@@left/hand": "Animation@imagin/move/anim@left/hand",
+        "Point@@right/hand": "Animation@imagin/move/anim@right/hand",
+        "Image@@left/hand": "Animation@imagin/move/anim@left/hand",
+        "Image@@right/hand": "Animation@imagin/move/anim@right/hand",
         "Rest@@left/hand": "Rest@imagin/move/anim@left/hand",
         "Rest@@right/hand": "Rest@imagin/move/anim@right/hand",
-        "Attention@@left/hand": "Cross@imagin/move/anim@left/hand",
-        "Attention@@right/hand": "Cross@imagin/move/anim@right/hand",
     })
 
-def process_new_subject_data(subject_id):
-    protocol = ns.io.NeuroStim(
-        f"new-data/{subject_id}/Task.json",
-        f"new-data/{subject_id}/data.xdf",
-        event_stream_name="Brainbuilding-Events"
-    )
-    raw, _ = protocol.raw_xdf(
-        annotation=True,
-        eeg_stream_names=["NeoRec21-1247", "actiCHamp-23090108"],
-        extended_annotation=True
-    )
-    preprocess_new_subject_events(raw)
-    process_raw(raw)
-    raw.save(f'validation_data/{subject_id}.fif', overwrite=True)
-
 def main():
-    # os.makedirs('validation_data', exist_ok=True)
-    # subject_ids = [f for f in os.listdir("new-data") if f.isdigit()]
-    # subject_ids = sorted(subject_ids)
-    # for subject_id in subject_ids:
-    #     process_new_subject_data(subject_id)
-    # exit() 
-    
     subject_ids = [f for f in os.listdir(RAW_DATA_DIR) if f.isdigit()]
     subject_ids = sorted(subject_ids)   
     os.makedirs(TRAINING_DATA_DIR, exist_ok=True)
