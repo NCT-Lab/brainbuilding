@@ -2,18 +2,22 @@ import warnings
 import numpy as np
 import mne
 import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
+import h5py
 import uuid
 from typing import TypedDict
-from config import STANDARD_EVENT_NAME_TO_ID_MAPPING
-
+import sys
 import glob
 import pathlib
 import os
 
+# Add the project root to the path so we can import from src
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+
+from src.brainbuilding.config import STANDARD_EVENT_NAME_TO_ID_MAPPING
+
+
 FIF_DATA_DIR = os.getenv("FIF_DATA_DIR", 'data/fif-dataset-2')
-DATASET_FNAME = os.getenv("DATASET_NAME", 'data/preprocessed/motor-imagery-2.parquet')
+DATASET_FNAME = os.getenv("DATASET_NAME", 'data/preprocessed/motor-imagery-2.h5')
 
 warnings.filterwarnings('ignore') 
 
@@ -146,32 +150,19 @@ def main():
     sample_weights = np.array(sample_weights)
     event_ids = np.array(event_ids)
     
-    # Create a table with metadata and arrays
-
     # Create directory if it doesn't exist
     os.makedirs(os.path.dirname(DATASET_FNAME), exist_ok=True)
     
-    # # Save to parquet file
-    # data = {
-    #     'X': X,
-    #     'y': y,
-    #     'subject_ids': subject_ids,
-    #     'sample_weights': sample_weights,
-    #     'event_ids': event_ids
-    # }
+    # Save to HDF5 file
+    print(X.shape)
     
-    # Create PyArrow table
-    table = pa.Table.from_pydict({
-        'y': pa.array(y),
-        'subject_ids': pa.array(subject_ids),
-        'sample_weights': pa.array(sample_weights),
-        'event_ids': pa.array(event_ids),
-        'X': pa.array(X.tolist())  # Convert numpy array to list for PyArrow
-    })
+    with h5py.File(DATASET_FNAME, 'w') as f:
+        f.create_dataset('X', data=X, compression='gzip')
+        f.create_dataset('y', data=y, compression='gzip')
+        f.create_dataset('subject_ids', data=subject_ids, compression='gzip')
+        f.create_dataset('sample_weights', data=sample_weights, compression='gzip')
+        f.create_dataset('event_ids', data=event_ids, compression='gzip')
     
-    # Write to parquet file
-    pq.write_table(table, DATASET_FNAME)
-
     print("Data saved successfully:")
     print(f"Shape: {X.shape}")
     print(f"Saved to: {DATASET_FNAME}")

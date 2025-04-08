@@ -1,3 +1,6 @@
+"""
+Same as within_subject_distances.py, but with augmented dataset.
+"""
 import os
 import numpy as np
 import h5py
@@ -10,12 +13,12 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from src.brainbuilding.training import compute_normalized_augmented_covariances
-from src.brainbuilding.config import ORDER
+from src.brainbuilding.config import ORDER, LAG
 
 # Configuration
 INPUT_DATA_DIR = os.getenv("INPUT_DATA_DIR", 'data/preprocessed')
 INPUT_DATASET_FNAME = os.getenv("INPUT_DATASET_NAME", 'motor-imagery-2.h5')
-OUTPUT_DATASET_FNAME = os.getenv("OUTPUT_DATASET_NAME", 'motor-imagery-distances-2.h5')
+OUTPUT_DATASET_FNAME = os.getenv("OUTPUT_DATASET_NAME", 'motor-imagery-augmented-distances-2.h5')
 
 # Full paths
 input_path = os.path.join(INPUT_DATA_DIR, INPUT_DATASET_FNAME)
@@ -56,7 +59,7 @@ def compute_distances(X, subject_ids):
     print("\nComputing Riemannian distances within subjects...")
     
     # First compute covariances if not already computed
-    X_cov = compute_normalized_augmented_covariances(X, order=1, lag=1)
+    X_cov = compute_normalized_augmented_covariances(X, order=ORDER, lag=LAG)
     
     # Store distances for each subject
     unique_subjects = np.sort(np.unique(subject_ids))

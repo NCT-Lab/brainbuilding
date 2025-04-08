@@ -23,7 +23,6 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from pyriemann.classification import MDM
 from pyriemann.tangentspace import TangentSpace
 from sklearn.decomposition import KernelPCA
-import numba
 
 from typing import TypedDict
 
@@ -33,7 +32,7 @@ from typing import TypedDict
 
 import matplotlib.pyplot as plt
 import pickle
-from config import ORDER, STANDARD_EVENT_NAME_TO_ID_MAPPING, CSP_METRIC
+from .config import ORDER, STANDARD_EVENT_NAME_TO_ID_MAPPING, CSP_METRIC
 
 import glob
 import pathlib
@@ -95,12 +94,14 @@ class CSPWithChannelSelection(CSP):
             
         return self
 
-def compute_normalized_augmented_covariances(X, order=4):
+def compute_normalized_augmented_covariances(X, order=4, lag=8):
     """Compute normalized augmented covariances for all samples using vectorized operations"""
-    augmentation = AugmentedDataset(order=order, lag=8)
+    augmentation = AugmentedDataset(order=order, lag=lag)
     cov = Covariances(estimator="oas")
+    augmentation_X = augmentation.transform(X)
+    print(augmentation_X.shape)
     
-    X_cov = cov.transform(augmentation.transform(X))
+    X_cov = cov.transform(augmentation_X)
     return X_cov
 
 def compute_csp_features(X, csp_transformer):
