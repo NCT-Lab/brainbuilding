@@ -9,3 +9,7 @@ __pycache__/
 *.npz
 *.npy
 *.pickle
+*.fif
+data/
+archive/*
+.vscode/

@@ -5,12 +5,12 @@ import mne
 from scipy.signal import butter
 import scipy.signal
 
-from eye_removal import EyeRemoval, create_standard_eog_channels
+from src.brainbuilding.eye_removal import EyeRemoval, create_standard_eog_channels
 from config import PICK_CHANNELS, ND_CHANNELS_MASK, ORDER, REMOVE_HEOG, REMOVE_VEOG, LOW_FREQ, HIGH_FREQ
 import os
 
-RAW_DATA_DIR = "new-dataset"
-TRAINING_DATA_DIR = "training_data"
+RAW_DATA_DIR = os.getenv("RAW_DATA_DIR", 'data/raw-dataset-2')
+TRAINING_DATA_DIR = os.getenv("TRAINING_DATA_DIR", 'data/fif-dataset-2')
 
 warnings.filterwarnings('ignore')
 DOWNSAMPLE_SFREQ = 250 
@@ -230,21 +230,24 @@ def process_subject_data(subject_id):
     raw, _ = protocol.raw_xdf(
         annotation=True,
         eeg_stream_names=["NeoRec21-1247", "actiCHamp-23090108"],
-        extended_annotation=True
+        extended_annotation=True,
+        include_vas=True,
     )
     preprocess_subject_events(raw)
     process_raw(raw)
     raw.save(f'{TRAINING_DATA_DIR}/{subject_id}.fif', overwrite=True)
 
 def preprocess_subject_events(raw: mne.io.Raw):
-    raw.annotations.rename({
-        "Point@@left/hand": "Animation@imagin/move/anim@left/hand",
-        "Point@@right/hand": "Animation@imagin/move/anim@right/hand",
-        "Image@@left/hand": "Animation@imagin/move/anim@left/hand",
-        "Image@@right/hand": "Animation@imagin/move/anim@right/hand",
-        "Rest@@left/hand": "Rest@imagin/move/anim@left/hand",
-        "Rest@@right/hand": "Rest@imagin/move/anim@right/hand",
-    })
+    print("Events:")
+    print([i for i in raw.annotations])
+    # raw.annotations.rename({
+    #     "Point@@left/hand": "Animation@imagin/move/anim@left/hand",
+    #     "Point@@right/hand": "Animation@imagin/move/anim@right/hand",
+    #     "Image@@left/hand": "Animation@imagin/move/anim@left/hand",
+    #     "Image@@right/hand": "Animation@imagin/move/anim@right/hand",
+    #     "Rest@@left/hand": "Rest@imagin/move/anim@left/hand",
+    #     "Rest@@right/hand": "Rest@imagin/move/anim@right/hand",
+    # })
 
 def main():
     subject_ids = [f for f in os.listdir(RAW_DATA_DIR) if f.isdigit()]

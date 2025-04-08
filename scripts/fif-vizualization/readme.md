@@ -1,0 +1,1 @@
+this script vizualizes what does the brainbuilding module sees upon stream using standard mne viz utils for fif files

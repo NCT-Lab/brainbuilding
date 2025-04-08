@@ -1,6 +1,7 @@
 import numpy as np
 
 ORDER = 4
+LAG = 8
 REMOVE_HEOG = True
 REMOVE_VEOG = True
 
@@ -65,59 +66,25 @@ CSP_METRIC = 'riemann'
 #     and 'Animation' not in x 
 #     and 'Background' not in x
 # )
-one_classes = [
-    'Animation@imagin/move/anim@left/hand',
-    'Animation@imagin/move/anim@right/hand',
+ONE_CLASS_EVENT_NAMES = [
+    "Point@@left/hand",
+    "Point@@right/hand",
+    "Image@@left/hand",
+    "Image@@right/hand",
 ]
-zero_classes = [
-    # 'Arrow@imagin/move/anim@left/hand',
-    # 'Arrow@imagin/move/anim@right/hand',
-    # 'Arrow@real/move/anim@left/hand',
-    # 'Arrow@real/move/anim@right/hand',
-    # 'Background@@',
-    # 'Cross@imagin/move/anim@left/hand',
-    # 'Cross@imagin/move/anim@right/hand',
-    # 'Cross@real/move/anim@left/hand',
-    # 'Cross@real/move/anim@right/hand',
-    # 'Instruction@@',
-    # 'MFI@@',
-    # 'Pause@@',
-    'Rest@imagin/move/anim@left/hand',
-    'Rest@imagin/move/anim@right/hand',
-    # 'Rest@real/move/anim@left/hand',
-    # 'Rest@real/move/anim@right/hand',
-    # 'VAS@@'
+ZERO_CLASS_EVENT_NAMES = [
+    "Rest@@left/hand",
+    "Rest@@right/hand",
 ]
 
-# STANDARD_EVENT_NAME_TO_ID_MAPPING = {
-#     i: 100 if non_class_filter(i) else (
-#         0 if zero_filter(i) else (
-#             1 if one_filter(i) else 2
-#         )
-#     )
-#     for i in ALL_EVENT_NAMES
-# }
-STANDARD_EVENT_NAME_TO_ID_MAPPING = {
-    i: 0 if i in zero_classes else (
-        1 if i in one_classes else 2
-    )
-    for i in ALL_EVENT_NAMES
-}
+def is_event_name_zero_class(event_name):
+    return any([i in event_name for i in ZERO_CLASS_EVENT_NAMES])
 
-# STANDARD_EVENT_NAME_TO_ID_MAPPING = {
-#     'Rest@imagin/move/anim@left/hand': 2,
-#     'Rest@imagin/move/anim@right/hand': 3,
-#     'Animation@imagin/move/anim@left/hand': 4,
-#     'Animation@imagin/move/anim@right/hand': 5,
-#     'Rest@real/move/anim@left/hand': 6,
-#     'Rest@real/move/anim@right/hand': 7,
-#     'Animation@real/move/anim@left/hand': 8,
-#     'Animation@real/move/anim@right/hand': 9,
-# }
-# STANDARD_EVENT_NAME_TO_ID_MAPPING_EXT = {
-#     i: 100 
-#     for i in ALL_EVENT_NAMES
-#     if i not in STANDARD_EVENT_NAME_TO_ID_MAPPING
-# }
-# STANDARD_EVENT_NAME_TO_ID_MAPPING.update(STANDARD_EVENT_NAME_TO_ID_MAPPING_EXT)
+def is_event_name_one_class(event_name):
+    return any([i in event_name for i in ONE_CLASS_EVENT_NAMES])
+
+STANDARD_EVENT_NAME_TO_ID_MAPPING = lambda x: 0 if is_event_name_zero_class(x) else (
+    1 if is_event_name_one_class(x) else 2
+)
+
 

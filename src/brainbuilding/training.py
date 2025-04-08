@@ -23,6 +23,7 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from pyriemann.classification import MDM
 from pyriemann.tangentspace import TangentSpace
 from sklearn.decomposition import KernelPCA
+import numba
 
 from typing import TypedDict
 
@@ -118,6 +119,7 @@ def create_pipelines():
     ]
     
     return Pipeline(steps=steps)
+
 
 def main():
     # Load processed data
