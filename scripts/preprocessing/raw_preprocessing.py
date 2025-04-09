@@ -6,7 +6,7 @@ from scipy.signal import butter
 import scipy.signal
 
 from src.brainbuilding.eye_removal import EyeRemoval, create_standard_eog_channels
-from config import PICK_CHANNELS, ND_CHANNELS_MASK, ORDER, REMOVE_HEOG, REMOVE_VEOG, LOW_FREQ, HIGH_FREQ
+from src.brainbuilding.config import PICK_CHANNELS, ND_CHANNELS_MASK, ORDER, REMOVE_HEOG, REMOVE_VEOG, LOW_FREQ, HIGH_FREQ
 import os
 
 RAW_DATA_DIR = os.getenv("RAW_DATA_DIR", 'data/raw-dataset-2')
