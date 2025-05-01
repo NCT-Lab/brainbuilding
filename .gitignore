@@ -13,3 +13,6 @@ __pycache__/
 data/
 archive/*
 .vscode/
+*.pdf
+*.csv
+*.png
