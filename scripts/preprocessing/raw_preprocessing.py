@@ -4,12 +4,17 @@ import numpy as np
 import mne
 from scipy.signal import butter
 import scipy.signal
+import sys
+import os
+from mne.preprocessing import ICA
+# Add the project root to the path so we can import from src
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from src.brainbuilding.eye_removal import EyeRemoval, create_standard_eog_channels
 from src.brainbuilding.config import PICK_CHANNELS, ND_CHANNELS_MASK, ORDER, REMOVE_HEOG, REMOVE_VEOG, LOW_FREQ, HIGH_FREQ
 import os
 
-RAW_DATA_DIR = os.getenv("RAW_DATA_DIR", 'data/raw-dataset-2')
+RAW_DATA_DIR = os.getenv("RAW_DATA_DIR", 'data/raw-dataset-2/')
 TRAINING_DATA_DIR = os.getenv("TRAINING_DATA_DIR", 'data/fif-dataset-2')
 
 warnings.filterwarnings('ignore')
@@ -45,26 +50,38 @@ def get_notna_data(data):
     return data[:, start_idx:end_idx], start_idx, end_idx
 
 def apply_ica(raw):
-    data = raw.get_data()
-    result = data.copy()
-    data_to_process, start_idx, end_idx = get_notna_data(data)
+    raw_data = raw.get_data()
+    print(f"{np.all(raw_data == raw.get_data())=}")
+    ica = ICA(n_components=18, max_iter='auto')
+    ica.fit(raw, verbose=True)
+    # ica.exclude = [0,1]
+    eog_indices, eog_scores = ica.find_bads_eog(raw, threshold=3.0, ch_name=['Fp1', 'Fp2'], verbose=False)
+    print(f"EOG indices: {eog_indices}")
+    print(f"EOG scores: {eog_scores}")
+    ica.exclude = eog_indices
+    ica.apply(raw)
+    new_raw_data = raw.get_data()
+    print(f"{np.all(raw_data == new_raw_data)=}")
+    # data = raw.get_data()
+    # result = data.copy()
+    # data_to_process, start_idx, end_idx = get_notna_data(data)
     
-    # Create EOG channels
-    veog_data, heog_data = create_standard_eog_channels(data_to_process)
-    # Apply EyeRemoval ICA
-    eye_removal = EyeRemoval(n_components=18, 
-                            veog_data=veog_data,
-                            heog_data=heog_data,
-                            remove_veog=REMOVE_VEOG,
-                            remove_heog=REMOVE_HEOG)
+    # # Create EOG channels
+    # veog_data, heog_data = create_standard_eog_channels(data_to_process)
+    # # Apply EyeRemoval ICA
+    # eye_removal = EyeRemoval(n_components=18, 
+    #                         veog_data=veog_data,
+    #                         heog_data=heog_data,
+    #                         remove_veog=REMOVE_VEOG,
+    #                         remove_heog=REMOVE_HEOG)
     
-    eye_removal.fit(data_to_process)
-    # Clean the data
-    data_cleaned = eye_removal.transform(data_to_process)
+    # eye_removal.fit(data_to_process)
+    # # Clean the data
+    # data_cleaned = eye_removal.transform(data_to_process)
     
-    # Insert cleaned data back into original array
-    result[:, start_idx:end_idx] = data_cleaned
-    raw._data = result
+    # # Insert cleaned data back into original array
+    # result[:, start_idx:end_idx] = data_cleaned
+    # raw._data = result
     
     return raw
 
@@ -213,7 +230,8 @@ def process_raw(raw: mne.io.Raw):
     
     sfreq = raw.info["sfreq"]
     print(f'SFREQ: {sfreq}')
-    raw = apply_bandpass_filter(raw, sfreq)
+    raw.filter(l_freq=LOW_FREQ, h_freq=HIGH_FREQ, fir_design='firwin')
+    # raw = apply_bandpass_filter(raw, sfreq)
     raw = apply_ica(raw)
     raw.pick(picks=PICK_CHANNELS)
     # print(mne.events_from_annotations(raw)[1])
@@ -238,8 +256,9 @@ def process_subject_data(subject_id):
     raw.save(f'{TRAINING_DATA_DIR}/{subject_id}.fif', overwrite=True)
 
 def preprocess_subject_events(raw: mne.io.Raw):
-    print("Events:")
-    print([i for i in raw.annotations])
+    pass
+    # print("Events:")
+    # print([i for i in raw.annotations])
     # raw.annotations.rename({
     #     "Point@@left/hand": "Animation@imagin/move/anim@left/hand",
     #     "Point@@right/hand": "Animation@imagin/move/anim@right/hand",

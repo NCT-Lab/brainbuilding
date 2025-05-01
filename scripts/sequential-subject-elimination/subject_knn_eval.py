@@ -16,7 +16,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')
 INPUT_DATA_DIR = os.getenv("INPUT_DATA_DIR", 'data/preprocessed')
 INPUT_DISTANCES_FNAME = os.getenv("INPUT_DISTANCES_NAME", 'motor-imagery-distances-2.h5')
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", 'scripts/sequential-subject-elimination/results')
-NUM_NEIGHBORS = 5  # Number of neighbors for KNN
+NUM_NEIGHBORS = 25  # Number of neighbors for KNN
 
 # Full paths
 input_distances_path = os.path.join(INPUT_DATA_DIR, INPUT_DISTANCES_FNAME)

@@ -2,7 +2,7 @@
 import mne
 
 # Load the saved FIFF file
-raw = mne.io.read_raw_fif('eeg_data_raw.fif', preload=True)
+raw = mne.io.read_raw_fif('data/fif-dataset-2/15.fif', preload=True)
 
 # Configure MNE to use Qt backend for plotting
 mne.set_config('MNE_BROWSER_BACKEND', 'qt')

@@ -10,9 +10,15 @@ from sklearn.svm import SVC
 from sklearn.metrics import precision_score, recall_score, accuracy_score, f1_score, roc_auc_score
 from pyriemann.estimation import Covariances
 from pyriemann.spatialfilters import CSP
-from scipy.stats import pearsonr
+from scipy.stats import pearsonr, spearmanr
 import warnings
 from tqdm import tqdm
+import umap # Added UMAP
+
+# Configure Matplotlib for editable text in PDFs
+import matplotlib
+matplotlib.rcParams['pdf.fonttype'] = 42
+matplotlib.rcParams['ps.fonttype'] = 42 # Also for PostScript output if ever used
 
 # --- Constants ---
 # Use environment variable or default relative path within the project structure
@@ -22,6 +28,8 @@ DATASET_FNAME = os.getenv("DATASET_FNAME", DEFAULT_DATASET_PATH)
 RESULTS_DIR = 'vas-correlation/results'
 POSITIVE_CLASS_LABEL = 1 # Label designated for motor imagery
 CSP_N_COMPONENTS = 10 # Number of CSP components
+UMAP_N_NEIGHBORS = 60 # Number of neighbors for UMAP
+RANDOM_STATE = 42 # For reproducibility
 
 
 # --- Helper Functions ---
@@ -81,6 +89,39 @@ def plot_metrics(metrics_df, output_path):
     # Save the plot directly, errors will propagate
     plt.savefig(output_path, format='pdf', bbox_inches='tight')
     plt.close() # Close the figure to free memory
+
+def plot_f1_correlation(metrics_df, output_path):
+    """Generates and saves a bar plot of F1 and VAS Correlation per subject, sorted by F1 score."""
+    if metrics_df.empty or not all(c in metrics_df.columns for c in ['f1', 'vas_correlation']):
+        print("Metrics DataFrame is empty or missing 'f1'/'vas_correlation', skipping F1/Correlation plot.")
+        return
+
+    # Sort subjects by F1 score in descending order
+    sorted_df = metrics_df.sort_values('f1', ascending=False).copy()
+    sorted_df['subject_id'] = sorted_df['subject_id'].astype(str)
+    subject_order = sorted_df['subject_id'].tolist()
+
+    # Metrics to plot
+    metrics_to_plot = ['f1', 'vas_correlation']
+    melted_df = sorted_df.melt(id_vars='subject_id',
+                               value_vars=metrics_to_plot,
+                               var_name='metric',
+                               value_name='value')
+
+    # Create the plot
+    plt.figure(figsize=(12, 7))
+    sns.barplot(data=melted_df, x='subject_id', y='value', hue='metric', order=subject_order)
+
+    plt.title('Per-Subject F1 Score and VAS Correlation (Sorted by F1)')
+    plt.xlabel('Subject ID')
+    plt.ylabel('Metric Value')
+    plt.xticks(rotation=45, ha='right')
+    plt.legend(title='Metric', bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.tight_layout(rect=[0, 0, 0.9, 1])
+
+    # Save the plot
+    plt.savefig(output_path, format='pdf', bbox_inches='tight')
+    plt.close()
 
 
 # --- Main Script Logic ---
@@ -205,6 +246,76 @@ def main():
         print(f"Finished subject {subject_id}. Processed {processed_folds} folds, skipped {skipped_folds} folds due to single class in train split.")
         all_predictions.extend(subject_predictions)
 
+        # --- Post-LOOCV Analysis for the current subject ---
+        # Check if we have valid predictions for this subject to generate plots
+        subject_results_df = pd.DataFrame([p for p in subject_predictions if p['predicted_label'] != -99])
+
+        if not subject_results_df.empty and len(X_subj) > 0 and len(np.unique(y_subj)) > 1:
+            print(f"\nGenerating UMAP and Regression plots for subject {subject_id}...")
+
+            # 1. UMAP Plot of CSP Features
+            try:
+                # Fit CSP on all data for this subject for visualization
+                cov_vis = Covariances(estimator='oas')
+                csp_vis = CSP(nfilter=CSP_N_COMPONENTS, log=True, metric='riemann')
+                # Need to fit covariance first, then CSP
+                covs_subj = cov_vis.fit_transform(X_subj)
+                X_csp = csp_vis.fit_transform(covs_subj, y_subj)
+
+                # Apply UMAP
+                reducer = umap.UMAP(n_neighbors=UMAP_N_NEIGHBORS, random_state=RANDOM_STATE)
+                embedding = reducer.fit_transform(X_csp)
+
+                # Plot UMAP
+                plt.figure(figsize=(8, 8))
+                scatter = sns.scatterplot(x=embedding[:, 0], y=embedding[:, 1], hue=y_subj, palette='viridis', s=50, alpha=0.7)
+                plt.title(f'UMAP Projection of CSP Features - Subject {subject_id}')
+                plt.xlabel('UMAP Dimension 1')
+                plt.ylabel('UMAP Dimension 2')
+                # Handle legend for potentially many classes if needed, but assuming 2 here
+                handles, labels = scatter.get_legend_handles_labels()
+                # Create mapping if needed, e.g., {0: 'Rest', 1: 'Imagery'}
+                class_names = {l: f"Class {l}" for l in np.unique(y_subj).astype(str)}
+                scatter.legend(handles, [class_names.get(lbl, lbl) for lbl in labels], title="Class")
+                plt.grid(True, linestyle='--', alpha=0.5)
+
+                umap_plot_path = os.path.join(RESULTS_DIR, f'umap_subject_{subject_id}.pdf')
+                plt.savefig(umap_plot_path, format='pdf', bbox_inches='tight')
+                plt.close()
+                print(f"Saved UMAP plot to: {umap_plot_path}")
+
+            except Exception as e:
+                print(f"\nError generating UMAP plot for subject {subject_id}: {e}")
+
+            # 2. Regression Plot (Predicted Proba vs VAS for Motor Imagery)
+            try:
+                # Filter LOOCV results for positive true label and valid probability
+                mi_results = subject_results_df[
+                    (subject_results_df['true_label'] == POSITIVE_CLASS_LABEL) &
+                    (subject_results_df['predicted_proba'].notna())
+                ].copy()
+
+                if len(mi_results) > 1:
+                    plt.figure(figsize=(8, 6))
+                    # Use lowess=True for LOESS smoothing (requires statsmodels)
+                    sns.regplot(data=mi_results, x='sample_weight', y='predicted_proba', scatter_kws={'s': 20, 'alpha': 0.6}, lowess=True)
+                    plt.title(f'Predicted Probability vs. VAS Score (Motor Imagery) - Subject {subject_id} (LOESS Fit)')
+                    plt.xlabel('VAS Score (Sample Weight)')
+                    plt.ylabel(f'Predicted Probability (Class {POSITIVE_CLASS_LABEL})')
+                    plt.grid(True, linestyle='--', alpha=0.5)
+                    plt.ylim(mi_results['predicted_proba'].min(), mi_results['predicted_proba'].max()) # Probabilities are between 0 and 1
+
+                    reg_plot_path = os.path.join(RESULTS_DIR, f'regplot_proba_vs_vas_subject_{subject_id}.pdf')
+                    plt.savefig(reg_plot_path, format='pdf', bbox_inches='tight')
+                    plt.close()
+                    print(f"Saved regression plot to: {reg_plot_path}")
+                else:
+                    print(f"Skipping regression plot for subject {subject_id}: Not enough motor imagery samples with valid probabilities ({len(mi_results)} found). Need > 1.")
+            except Exception as e:
+                 print(f"\nError generating regression plot for subject {subject_id}: {e}")
+        else:
+             print(f"\nSkipping UMAP/Regression plots for subject {subject_id} due to insufficient valid data or only one class.")
+
     # 7. Consolidate results into a DataFrame
     overall_results_df = pd.DataFrame(all_predictions)
 
@@ -254,7 +365,7 @@ def main():
                  print(f"Skipping AUC for subject {subject_id}: Only one class present in data with valid probabilities.")
 
 
-        # Calculate VAS Correlation for positive true labels with valid probabilities - Errors will propagate
+        # Calculate VAS Correlation (Spearman) for positive true labels with valid probabilities - Errors will propagate
         correlation = np.nan
         p_value = np.nan
         # Filter for positive class samples where prediction probability is not NaN
@@ -264,7 +375,8 @@ def main():
         if len(corr_data) >= 2:
             # Check for constant series which also prevent correlation calculation
             if corr_data['predicted_proba'].nunique() > 1 and corr_data['sample_weight'].nunique() > 1:
-                 correlation, p_value = pearsonr(corr_data['predicted_proba'], corr_data['sample_weight'])
+                 # Use spearmanr instead of pearsonr
+                 correlation, p_value = spearmanr(corr_data['predicted_proba'], corr_data['sample_weight'])
             else:
                  print(f"Could not calculate VAS correlation for subject {subject_id}: Predicted probabilities or VAS scores are constant for positive samples.")
         else:
@@ -279,6 +391,7 @@ def main():
             'f1': f1,
             'auc': auc,
             'vas_correlation': correlation,
+            'vas_correlation_pvalue': p_value, # Added p-value
             # Add counts for context
             'n_samples_total': len(subject_data), # Total samples for subject before LOOCV
             'n_samples_valid_pred': len(group), # Samples with successful predictions
@@ -306,6 +419,12 @@ def main():
          plot_path = os.path.join(RESULTS_DIR, 'subject_metrics_plot.pdf')
          plot_metrics(subject_metrics_df, plot_path)
          print(f"Saved metrics plot to: {plot_path}")
+
+         # 11. Generate and save the F1/Correlation plot
+         print("Generating F1/Correlation plot...")
+         f1_corr_plot_path = os.path.join(RESULTS_DIR, 'subject_f1_correlation_plot.pdf')
+         plot_f1_correlation(subject_metrics_df, f1_corr_plot_path)
+         print(f"Saved F1/Correlation plot to: {f1_corr_plot_path}")
     else:
          print("No subject metrics were calculated, skipping saving metrics file and plot.")
 

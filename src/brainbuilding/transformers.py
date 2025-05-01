@@ -1,0 +1,790 @@
+from typing import Dict, Tuple, Optional
+import numpy as np
+from sklearn.base import BaseEstimator, TransformerMixin
+from pyriemann.utils.mean import mean_riemann
+from scipy.linalg import sqrtm
+from pyriemann.utils.tangentspace import tangent_space 
+from pyriemann.estimation import Covariances
+from pyriemann.utils.base import invsqrtm   
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import FunctionTransformer
+from pyriemann.spatialfilters import CSP
+from .context import _IN_PREDICTION_PHASE
+import numpy.lib.recfunctions as rfn
+from pyriemann.utils.tangentspace import upper, unupper
+from numba import njit
+
+def happend(x, col_data, col_name:str):
+    if not x.dtype.fields:
+        # Not a structured array
+        return None
+    # 0) create new structured array
+    old_dtype = [i for i in x.dtype.descr if i[0] != col_name and i[0] != '']
+    y = np.empty(x.shape, dtype=old_dtype+[(col_name, col_data.dtype, col_data.shape[1:])])
+    for name in [i[0] for i in old_dtype]:
+        # 1) copy old array
+        y[name] = x[name]
+        
+    y[col_name] = col_data                                                   
+    return y
+
+# @njit(nopython=True)
+def reference_weighted_euclidean_distance(X, Y, reference):
+    diff = X - Y
+    a = upper(reference @ unupper(diff))
+    return np.sqrt(np.sum(a * a))
+
+class ParallelTransportTransformer(BaseEstimator, TransformerMixin):
+    """
+    A scikit-learn transformer that applies parallel transport to covariance matrices.
+    Supports online updates of mean estimates.
+    
+    Parameters
+    ----------
+    mock_fit : bool, default=False
+        If True, the transformer will not fit any data and just pass it through
+    include_means : bool, default=False
+        If True, the transformer will include the subject mean and general mean
+        matrices in the output structured array
+    
+    Attributes
+    ----------
+    subject_means_ : dict
+        Dictionary mapping subject IDs to their mean covariance matrices
+    general_mean_ : ndarray
+        General mean covariance matrix across all subjects
+    subject_counts_ : dict
+        Dictionary mapping subject IDs to the number of samples used for their mean estimation
+    total_count_ : int
+        Total number of samples used for general mean estimation
+    """
+    
+    def __init__(self, mock_fit: bool = False, include_means: bool = False):
+        self.subject_means_: Dict[int, np.ndarray] = {}
+        self.general_mean_: Optional[np.ndarray] = None
+        self.subject_counts_: Dict[int, int] = {}
+        self.total_count_: int = 0
+        self.mock_fit = mock_fit
+        self.include_means = include_means
+    
+    def get_subject_means(self) -> Dict[int, np.ndarray]:
+        """
+        Get the mean covariance matrices for all subjects.
+        
+        Returns
+        -------
+        dict
+            Dictionary mapping subject IDs to their mean covariance matrices
+        """
+        return self.subject_means_
+
+    def get_subject_counts(self) -> Dict[int, int]:
+        """
+        Get the sample counts for all subjects.
+        
+        Returns
+        -------
+        dict
+            Dictionary mapping subject IDs to their sample counts
+        """
+        return self.subject_counts_
+
+    def set_subject_means_and_counts(self, subject_means: Dict[int, np.ndarray], 
+                                   subject_counts: Dict[int, int]) -> None:
+        """
+        Set subject means and counts, and update the general mean and total count.
+        
+        Parameters
+        ----------
+        subject_means : dict
+            Dictionary mapping subject IDs to their mean covariance matrices
+        subject_counts : dict
+            Dictionary mapping subject IDs to their sample counts
+            
+        Raises
+        ------
+        ValueError
+            If subject_means and subject_counts have different keys
+        """
+        if self.mock_fit:
+            return
+        
+        if set(subject_means.keys()) != set(subject_counts.keys()):
+            raise ValueError("subject_means and subject_counts must have the same keys")
+            
+        self.subject_means_ = subject_means
+        self.subject_counts_ = subject_counts
+        self.total_count_ = sum(subject_counts.values())
+        
+        # Update general mean using weighted Riemannian mean
+        if self.total_count_ > 0:
+            self.general_mean_ = mean_riemann(
+                np.array(list(self.subject_means_.values())),
+                sample_weight=np.array(list(self.subject_counts_.values()), dtype=np.float64)
+            )
+    
+    def _extract_covariances(self, X: np.ndarray) -> np.ndarray:
+        """Extract covariance matrices from structured array"""
+        return X['sample']
+    
+    def _extract_subject_ids(self, X: np.ndarray) -> np.ndarray:
+        """Extract subject IDs from structured array"""
+        return X['subject_id']
+    
+    def fit(self, X: np.ndarray, y: Optional[np.ndarray] = None) -> 'ParallelTransportTransformer':
+        """
+        Fit the transformer by computing subject means and general mean.
+        
+        Parameters
+        ----------
+        X : structured array
+            Input data with 'covariance' and 'subject_id' fields
+        y : None
+            Not used, present for scikit-learn compatibility
+            
+        Returns
+        -------
+        self : ParallelTransportTransformer
+            The fitted transformer
+        """
+        if self.mock_fit:
+            return self
+        
+        self.subject_means_ = {}
+        self.general_mean_ = None
+        self.subject_counts_ = {}
+        self.total_count_ = 0
+        
+        # Extract data from structured array
+        covariances = self._extract_covariances(X)
+        subject_ids = self._extract_subject_ids(X)
+        
+        # Compute means for each subject
+        unique_subjects = np.unique(subject_ids)
+        for subject in unique_subjects:
+            if subject in self.subject_means_:
+                # Skip subjects that have already been seen (use partial_fit for online updates)
+                continue
+            
+            mask = subject_ids == subject
+            subject_covs = covariances[mask]
+            self.subject_means_[subject] = mean_riemann(subject_covs)
+            self.subject_counts_[subject] = len(subject_covs)
+        
+        # Compute general mean
+        self.general_mean_ = mean_riemann(
+            np.array(list(self.subject_means_.values())),
+            sample_weight=np.array(list(self.subject_counts_.values()), dtype=np.float64)
+        )
+        self.general_mean_inv_ = np.linalg.inv(self.general_mean_)
+        self.total_count_ = len(covariances)
+        
+        return self
+    
+    def partial_fit(self, X: np.ndarray, y: Optional[np.ndarray] = None, custom_weights: Optional[np.ndarray] = None) -> 'ParallelTransportTransformer':
+        """
+        Update mean estimates with new data.
+        
+        Parameters
+        ----------
+        X : structured array
+            New data with 'covariance' and 'subject_id' fields
+        y : None
+            Not used, present for scikit-learn compatibility
+            
+        Returns
+        -------
+        self : ParallelTransportTransformer
+            The updated transformer
+        """
+        if self.mock_fit:
+            return self
+        
+        # Extract data from structured array
+        covariances = self._extract_covariances(X)
+        subject_ids = self._extract_subject_ids(X)
+        
+        # If this is the first call, initialize with fit
+        if self.general_mean_ is None:
+            return self.fit(X, y)
+        
+        # Update subject means
+        unique_subjects = np.unique(subject_ids)
+        for subject in unique_subjects:
+            mask = subject_ids == subject
+            subject_covs = covariances[mask]
+            
+            if subject in self.subject_means_:
+                # Update existing subject mean
+                old_mean = self.subject_means_[subject]
+                old_count = self.subject_counts_[subject]
+                if custom_weights is None:
+                    weights = [old_count] + [1] * len(subject_covs)
+                else:
+                    weights = [old_count] + list(custom_weights[mask])
+                self.subject_means_[subject] = mean_riemann(
+                    np.array([old_mean] + list(subject_covs)),
+                    sample_weight=np.array(weights, dtype=np.float64)
+                )
+                self.subject_counts_[subject] += len(subject_covs) if custom_weights is None else sum(custom_weights[mask])
+            else:
+                # Initialize new subject mean
+                self.subject_means_[subject] = mean_riemann(subject_covs)
+                self.subject_counts_[subject] = len(subject_covs) if custom_weights is None else sum(custom_weights[mask])
+        
+        # Update general mean
+        if custom_weights is None:
+            weights = [self.total_count_] + [1] * len(covariances)
+        else:
+            weights = [self.total_count_] + list(custom_weights)
+        self.general_mean_ = mean_riemann(
+            np.array([self.general_mean_] + list(covariances)),
+            sample_weight=np.array(weights, dtype=np.float64)
+        )
+        self.general_mean_inv_ = np.linalg.inv(self.general_mean_)
+        self.total_count_ += len(covariances) if custom_weights is None else sum(custom_weights)
+        
+        return self
+    
+    def transform(self, X: np.ndarray) -> np.ndarray:
+        """
+        Transform covariance matrices using parallel transport.
+        
+        Parameters
+        ----------
+        X : structured array
+            Input data with 'covariance' and 'subject_id' fields
+            
+        Returns
+        -------
+        ndarray
+            Transformed covariance matrices
+        """
+        if self.mock_fit:
+            return self._extract_covariances(X)
+        
+        # Extract data from structured array
+        covariances = self._extract_covariances(X)
+        subject_ids = self._extract_subject_ids(X)
+        
+        # Initialize output array
+        X_transformed = np.zeros_like(covariances)
+        
+        # Initialize arrays for subject and general means if needed
+        general_means_inv = np.zeros_like(covariances) if self.include_means else None
+        general_means = np.zeros_like(covariances) if self.include_means else None
+        
+        # Apply parallel transport to each sample
+        for i, (cov, subject) in enumerate(zip(covariances, subject_ids)):
+            if subject not in self.subject_means_:
+                raise ValueError(f"Subject {subject} not seen during fitting")
+            
+            # Get subject mean
+            M = self.subject_means_[subject]
+            
+            # Save subject mean and general mean if requested
+            if self.include_means:
+                general_means_inv[i] = self.general_mean_inv_
+                general_means[i] = self.general_mean_
+            
+            # Compute transformation matrix E = (GM^-1)^1/2
+            GM_inv = np.dot(self.general_mean_, np.linalg.inv(M))
+            E = sqrtm(GM_inv)
+            
+            # Apply transformation: ESE^T
+            X_transformed[i] = np.dot(np.dot(E, cov), E.T)
+        
+        # Create structured array with transformed data
+        X_transformed_structured = happend(X, X_transformed, 'sample')
+        
+        # Add subject and general means if requested
+        if self.include_means:
+            X_transformed_structured = happend(X_transformed_structured, general_means_inv, 'general_mean_inv')
+            X_transformed_structured = happend(X_transformed_structured, general_means, 'general_mean')
+        
+        return X_transformed_structured
+    
+    def fit_transform(self, X: np.ndarray, y: Optional[np.ndarray] = None) -> np.ndarray:
+        """
+        Fit the transformer and transform the data.
+        
+        Parameters
+        ----------
+        X : structured array
+            Input data with 'covariance' and 'subject_id' fields
+        y : None
+            Not used, present for scikit-learn compatibility
+            
+        Returns
+        -------
+        ndarray
+            Transformed covariance matrices
+        """
+        return self.fit(X, y).transform(X)
+    
+
+class TangentSpaceProjector(BaseEstimator, TransformerMixin):
+    """
+    A transformer that projects matrices to tangent space using the general mean matrices.
+    
+    Parameters
+    ----------
+    sample_col : str, default='sample'
+        Name of the column in structured array containing the sample matrices
+    general_mean_col : str, default='general_mean'
+        Name of the column in structured array containing the general mean matrices
+    
+    Attributes
+    ----------
+    sample_col_ : str
+        Name of the column containing sample matrices
+    general_mean_col_ : str
+        Name of the column containing general mean matrices
+    """
+    
+    def __init__(self, sample_col='sample', general_mean_col='general_mean'):
+        self.sample_col = sample_col
+        self.general_mean_col = general_mean_col
+    
+    def fit(self, X, y=None):
+        """
+        Fit the transformer.
+        
+        Parameters
+        ----------
+        X : structured array
+            Input data with sample matrices and general mean matrices
+        y : None
+            Not used, present for scikit-learn compatibility
+            
+        Returns
+        -------
+        self : TangentSpaceParallelTransportTransformer
+            The fitted transformer
+        """
+        return self
+    
+    def transform(self, X):
+        """
+        Transform matrices by projecting to tangent space around general mean.
+        
+        Parameters
+        ----------
+        X : structured array
+            Input data with sample matrices and general mean matrices
+            
+        Returns
+        -------
+        ndarray
+            Structured array with tangent space vectors
+        """
+        # Check if general_mean_col exists in X
+        if self.general_mean_col not in X.dtype.names:
+            raise ValueError(f"Column '{self.general_mean_col}' not found in input data. "
+                             f"Available columns: {X.dtype.names}")
+        
+        # Extract samples and general means
+        samples = X[self.sample_col]
+        general_means = X[self.general_mean_col]
+        
+        # Project each sample to tangent space around its corresponding general mean
+        tangent_vectors = np.array([
+            tangent_space(sample[np.newaxis, :, :], general_mean)[0]
+            for sample, general_mean in zip(samples, general_means)
+        ])
+        
+        # Create structured array with tangent vectors
+        X_tangent_structured = happend(X, tangent_vectors, self.sample_col)
+        
+        return X_tangent_structured
+    
+    def fit_transform(self, X, y=None):
+        """
+        Fit the transformer and transform the data.
+        
+        Parameters
+        ----------
+        X : structured array
+            Input data with sample matrices and general mean matrices
+        y : None
+            Not used, present for scikit-learn compatibility
+            
+        Returns
+        -------
+        ndarray
+            Structured array with tangent space vectors
+        """
+        return self.fit(X, y).transform(X)
+
+
+class AugmentedDataset(BaseEstimator, TransformerMixin):
+    """This transformation creates an embedding version of the current dataset.
+
+    The implementation and the application is described in [1]_.
+    """
+    def __init__(self, order=1, lag=1):
+        self.order = order
+        self.lag = lag
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        if self.order == 1:
+            return X
+
+        X_new = np.concatenate(
+            [
+                X[:, :, p * self.lag: -(self.order - p) * self.lag]
+                for p in range(0, self.order)
+            ],
+            axis=1,
+        )
+
+        return X_new
+
+
+class ColumnSelector(BaseEstimator, TransformerMixin):
+    """
+    A scikit-learn transformer that selects specific columns from structured arrays.
+    
+    Parameters
+    ----------
+    fields : list of str
+        List of field names to select from the structured array
+        
+    Attributes
+    ----------
+    fields_ : list of str
+        The field names to select
+    """
+    
+    def __init__(self, fields):
+        self.fields = fields
+        self.fields_ = fields
+    
+    def fit(self, X, y=None):
+        return self
+    
+    def transform(self, X):
+        return X[self.fields]
+    
+    def fit_transform(self, X, y=None):
+        return self.fit(X, y).transform(X)
+
+
+class StructuredCSP(CSP):
+    def __init__(self, field='sample', nfilter=10, log=True, metric='riemann', **kwargs):
+        super().__init__(nfilter=nfilter, log=log, metric=metric, **kwargs)
+        self.field = field
+
+    def fit(self, X, y=None):
+        super().fit(X[self.field], y)
+        return self
+    
+    def transform(self, X):
+        transformed_data = super().transform(X[self.field])
+        X_new = happend(X, transformed_data, self.field)
+        if 'general_mean' in X.dtype.names:
+            X_new = happend(X_new, super().transform(X['general_mean']), 'general_mean')
+        return X_new
+
+
+class SubjectWhiteningTransformer(BaseEstimator, TransformerMixin):
+    """
+    A scikit-learn transformer that applies subject-specific whitening to signals.
+    Computes whitening matrices using background samples for each subject.
+    
+    Parameters
+    ----------
+    None
+    
+    Attributes
+    ----------
+    subject_whitening_matrices_ : dict
+        Dictionary mapping subject IDs to their whitening matrices
+    """
+    
+    def __init__(self):
+        self.subject_whitening_matrices_: Dict[int, np.ndarray] = {}
+    
+    def _extract_signals(self, X: np.ndarray) -> np.ndarray:
+        """Extract signals from structured array"""
+        return X['sample']
+    
+    def _extract_subject_ids(self, X: np.ndarray) -> np.ndarray:
+        """Extract subject IDs from structured array"""
+        return X['subject_id']
+    
+    def _extract_is_background(self, X: np.ndarray) -> np.ndarray:
+        """Extract background flags from structured array"""
+        return X['is_background']
+    
+    def fit(self, X: np.ndarray, y: Optional[np.ndarray] = None) -> 'SubjectWhiteningTransformer':
+        """
+        Fit the transformer by computing whitening matrices for each subject using their background samples.
+        
+        Parameters
+        ----------
+        X : structured array
+            Input data with fields:
+            - sample: (n_channels, n_times) array
+            - subject_id: int
+            - is_background: int (0 or 1)
+        y : None
+            Not used, present for scikit-learn compatibility
+            
+        Returns
+        -------
+        self : SubjectWhiteningTransformer
+            The fitted transformer
+        """
+        # Extract data from structured array
+        signals = self._extract_signals(X)
+        subject_ids = self._extract_subject_ids(X)
+        is_background = self._extract_is_background(X)
+        
+        # Compute whitening matrices for each subject
+        unique_subjects = np.unique(subject_ids)
+        for subject in unique_subjects:
+            # Get background samples for this subject
+            mask = (subject_ids == subject) & (is_background == 1)
+            if not np.any(mask):
+                raise ValueError(f"No background samples found for subject {subject}")
+            
+            subject_background = signals[mask]
+            
+            # Concatenate all background samples
+            background_concat = np.concatenate(subject_background, axis=1)
+            
+            # Compute covariance matrix
+            cov = Covariances(estimator='oas').transform(background_concat[np.newaxis, :, :])[0]
+            
+            # Compute whitening matrix
+            self.subject_whitening_matrices_[subject] = invsqrtm(cov)
+        
+        return self
+    
+    def transform(self, X: np.ndarray) -> np.ndarray:
+        """
+        Transform signals using subject-specific whitening matrices.
+        
+        Parameters
+        ----------
+        X : structured array
+            Input data with fields:
+            - sample: (n_channels, n_times) array
+            - subject_id: int
+            - is_background: int (0 or 1)
+            
+        Returns
+        -------
+        ndarray
+            Whitened signals
+        """
+        # Extract data from structured array
+        signals = self._extract_signals(X)
+        subject_ids = self._extract_subject_ids(X)
+        
+        # Initialize output array
+        X_transformed = np.zeros_like(signals)
+        X_structured_transformed = X.copy()
+        
+        # Apply whitening to each sample
+        for i, (signal, subject) in enumerate(zip(signals, subject_ids)):
+            if subject not in self.subject_whitening_matrices_:
+                raise ValueError(f"Subject {subject} not seen during fitting")
+            
+            # Get whitening matrix
+            W = self.subject_whitening_matrices_[subject]
+            
+            # Apply whitening: W @ signal
+            X_transformed[i] = np.dot(W, signal)
+        
+        X_structured_transformed['sample'] = X_transformed
+        
+        return X_structured_transformed
+    
+    def fit_transform(self, X: np.ndarray, y: Optional[np.ndarray] = None) -> np.ndarray:
+        """
+        Fit the transformer and transform the data.
+        
+        Parameters
+        ----------
+        X : structured array
+            Input data with fields:
+            - sample: (n_channels, n_times) array
+            - subject_id: int
+            - is_background: int (0 or 1)
+        y : None
+            Not used, present for scikit-learn compatibility
+            
+        Returns
+        -------
+        ndarray
+            Whitened signals
+        """
+        return self.fit(X, y).transform(X)
+
+
+class PredictionPhaseTransformer(BaseEstimator, TransformerMixin):
+    """
+    A wrapper transformer that only applies its inner transformer during prediction phase.
+    
+    Parameters
+    ----------
+    transformer : object
+        The transformer to apply during prediction phase.
+        Must implement fit, transform, and fit_transform methods.
+    
+    Attributes
+    ----------
+    transformer_ : object
+        The transformer to apply during prediction phase
+    """
+    
+    def __init__(self, transformer):
+        self.transformer = transformer
+    
+    def fit(self, X, y=None):
+        return self
+    
+    def transform(self, X):
+        if not _IN_PREDICTION_PHASE:
+            return X
+        return self.transformer.transform(X)
+    
+    def fit_transform(self, X, y=None):
+        if not _IN_PREDICTION_PHASE:
+            return X
+        return self.transformer.fit_transform(X, y)
+
+
+class Splitter(BaseEstimator, TransformerMixin):
+    """
+    A transformer that splits samples into multiple segments of equal length.
+    
+    Parameters
+    ----------
+    n_splits : int, default=3
+        Number of segments to split each sample into.
+        Each segment will have length = original_length / n_splits.
+    sample_field : str, default='sample'
+        Name of the field in the structured array that contains the data to split.
+    
+    Attributes
+    ----------
+    n_splits_ : int
+        The number of splits to perform
+    sample_field_ : str
+        The name of the field containing the data to split
+    """
+    
+    def __init__(self, n_splits=3, sample_field='sample'):
+        self.n_splits = n_splits
+        self.sample_field = sample_field
+    
+    def fit(self, X, y=None):
+        return self
+    
+    def transform(self, X):
+        # Repeat the entire structured array n_splits times
+        X_expanded = np.repeat(X, self.n_splits)
+        
+        # Split the data into n_splits segments
+        original_samples = X[self.sample_field]
+        segment_length = original_samples.shape[2] // self.n_splits
+        segments = np.array([
+            original_samples[:, :, i*segment_length:(i+1)*segment_length] 
+            for i in range(self.n_splits)
+        ])
+        
+        # Reshape to get the desired order: (n_samples*n_splits, n_channels, segment_length)
+        X_expanded[self.sample_field] = segments.transpose(1, 0, 2, 3).reshape(
+            len(X_expanded), 
+            original_samples.shape[1], 
+            segment_length
+        )
+        
+        return X_expanded
+    
+    def fit_transform(self, X, y=None):
+        return self.fit(X, y).transform(X)
+
+
+class StructuredColumnTransformer(BaseEstimator, TransformerMixin):
+    """
+    A transformer that applies a single transformer to a specific column of a structured array.
+    
+    Parameters
+    ----------
+    column : str
+        Name of the column to transform.
+    transformer : object
+        Transformer to apply to the specified column.
+        Must implement fit, transform, and fit_transform methods.
+    
+    Attributes
+    ----------
+    column_ : str
+        The name of the column to transform
+    transformer_ : object
+        The transformer to apply
+    """
+    
+    def __init__(self, column, transformer):
+        self.column = column
+        self.transformer = transformer
+    
+    def fit(self, X, y=None):
+        self.transformer.fit(X[self.column], y)
+        return self
+    
+    def transform(self, X):
+        # Apply transformer to the specified column
+        transformed = self.transformer.transform(X[self.column])
+        X_transformed = happend(X, transformed, self.column)
+        
+        return X_transformed
+
+
+class BackgroundFilterTransformer(BaseEstimator, TransformerMixin):
+    """
+    A transformer that filters out all samples where is_background == True (or 1).
+    """
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        # Assumes 'is_background' is 1 for True, 0 for False
+        mask = X['is_background'] == 0
+        return X[mask]
+
+    def fit_transform(self, X, y=None):
+        return self.fit(X, y).transform(X)
+
+from functools import partial
+from sklearn.neighbors import KNeighborsClassifier
+
+class ReferenceKNN(KNeighborsClassifier):
+    def fit(self, X, y):
+        # we are assuming that the first sample is the reference
+        # this is a hack to make the metric work. 
+        # TODO: fix this. metadata routing?
+        reference = X['general_mean_inv'][0]
+        self.metric = partial(reference_weighted_euclidean_distance, reference=reference)
+        X = X['sample']
+        return super().fit(X, y)
+
+    def predict(self, X):
+        reference = X['general_mean_inv'][0]
+        self.metric = partial(reference_weighted_euclidean_distance, reference=reference)
+        X = X['sample']
+        
+        return super().predict(X)
+    
+    def predict_proba(self, X):
+        reference = X['general_mean_inv'][0]
+        self.metric = partial(reference_weighted_euclidean_distance, reference=reference)
+        X = X['sample']
+        return super().predict_proba(X)

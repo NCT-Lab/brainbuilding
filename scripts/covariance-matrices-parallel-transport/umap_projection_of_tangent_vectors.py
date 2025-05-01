@@ -109,7 +109,7 @@ def plot_projections(X_2d, y, subject_ids, output_dir):
     unique_classes = np.unique(y)
     class_names = [f"Class {c}" for c in unique_classes]
     
-    plt.scatter(X_2d[:, 0], X_2d[:, 1], c=y, cmap='tab10', alpha=0.7, s=10)
+    plt.scatter(X_2d[:, 0], X_2d[:, 1], c=y, alpha=0.7, s=10)
     
     plt.colorbar(ticks=unique_classes, label='Class')
     plt.title('UMAP Projection of Tangent Vectors (Colored by Class)')

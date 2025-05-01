@@ -5,6 +5,7 @@ import h5py
 from tqdm import tqdm
 import warnings
 from scipy.linalg import sqrtm
+from pyriemann.utils.tangentspace import tangent_space
 
 # Add the project root to the path so we can import from src
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
@@ -12,8 +13,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')
 from src.brainbuilding.training import AugmentedDataset
 from src.brainbuilding.config import ORDER, LAG
 
-ORDER = 8
-LAG = 8
+ORDER = 1
+LAG = 1
 
 # Configuration
 INPUT_DATA_DIR = os.getenv("INPUT_DATA_DIR", 'data/preprocessed')
@@ -162,6 +163,8 @@ def apply_parallel_transport(X_cov, subject_ids, subject_means, general_mean):
     for subject, M in subject_means.items():
         # Compute E = (GM^-1)^1/2
         GM_inv = np.dot(general_mean, np.linalg.inv(M))
+        # GM_inv = M
+
         transform_matrices[subject] = sqrtm(GM_inv)
     
     # Apply transformation to each sample
@@ -173,31 +176,6 @@ def apply_parallel_transport(X_cov, subject_ids, subject_means, general_mean):
         X_transformed[i] = np.dot(np.dot(E, cov), E.T)
     
     return X_transformed
-
-def project_to_tangent_space(X_transformed, general_mean):
-    """
-    Project transformed matrices to tangent space
-    
-    Parameters:
-    -----------
-    X_transformed : array
-        Transformed covariance matrices
-    general_mean : array
-        General mean matrix across all subjects (reference point)
-    
-    Returns:
-    --------
-    array
-        Vectors in tangent space
-    """
-    from pyriemann.utils.tangentspace import tangent_space
-    
-    print("Projecting matrices to tangent space...")
-    X_tangent = tangent_space(X_transformed, general_mean)
-    
-    print(f"Tangent space projection complete. New feature shape: {X_tangent.shape}")
-    
-    return X_tangent
 
 def save_datasets(X_transformed, X_tangent, y, subject_ids, sample_weights, event_ids):
     """
@@ -247,7 +225,8 @@ def main():
     X, y, subject_ids, sample_weights, event_ids = load_data(input_path)
     
     # Remove class 2 samples if needed
-    mask = y != 2
+    # mask = (y != 2) & (subject_ids != 23) & (subject_ids != 24)
+    mask = (y != 2)
     X = X[mask]
     y = y[mask]
     subject_ids = subject_ids[mask]
@@ -264,7 +243,15 @@ def main():
     X_transformed = apply_parallel_transport(X_cov, subject_ids, subject_means, general_mean)
     
     # Project transformed matrices to tangent space
-    X_tangent = project_to_tangent_space(X_transformed, general_mean)
+    print("Projecting matrices to tangent space...")
+    X_tangent = tangent_space(X_transformed, general_mean)
+    # X_tangent = []
+    # for i, (cov, subject) in enumerate(tqdm(zip(X_transformed, subject_ids), 
+    #                                        total=len(X_transformed), 
+    #                                        desc="Projecting to tangent space")):
+    #     X_tangent.append(tangent_space(cov, subject_means[subject]))
+    # X_tangent = np.array(X_tangent)
+    print(f"Tangent space projection complete. New feature shape: {X_tangent.shape}")
     
     # Save datasets
     save_datasets(X_transformed, X_tangent, y, subject_ids, sample_weights, event_ids)

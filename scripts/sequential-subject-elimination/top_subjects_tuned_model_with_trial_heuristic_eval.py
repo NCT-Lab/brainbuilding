@@ -219,7 +219,7 @@ def evaluate_model_with_cv(X_preprocessed, y, subject_ids, selected_subjects, ev
         
         for threshold in thresholds:
             y_cal_pred = (y_cal_proba >= threshold).astype(int)
-            spec = specificity_score(y_cal, y_cal_pred)
+            spec = f1_score(y_cal, y_cal_pred)
             diff = abs(spec - target_specificity)
             
             if diff < best_diff:

@@ -3,7 +3,7 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.decomposition import FastICA
 from scipy import stats
 
-from config import PICK_CHANNELS
+from .config import PICK_CHANNELS
 
 class EyeRemoval(BaseEstimator, TransformerMixin):
     def __init__(self, n_components, veog_data, heog_data, remove_veog=True, remove_heog=True, random_state=42):
@@ -19,6 +19,10 @@ class EyeRemoval(BaseEstimator, TransformerMixin):
         heog_correlations = np.array([stats.pearsonr(source, self.heog_data)[0] for source in X_transformed])
         self.veog_idx = np.argmax(np.abs(veog_correlations))
         self.heog_idx = np.argmax(np.abs(heog_correlations))
+        if self.veog_idx == self.heog_idx:
+            indices = np.arange(len(veog_correlations))
+            mask = indices != self.veog_idx
+            self.heog_idx = np.argmax(np.abs(heog_correlations[mask]))
         return self
     
     def transform(self, X):
