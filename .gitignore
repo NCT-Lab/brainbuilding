@@ -16,3 +16,5 @@ archive/*
 *.pdf
 *.csv
 *.png
+*.pkl
+*.egg-info/

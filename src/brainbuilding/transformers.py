@@ -12,7 +12,6 @@ from pyriemann.spatialfilters import CSP
 from .context import _IN_PREDICTION_PHASE
 import numpy.lib.recfunctions as rfn
 from pyriemann.utils.tangentspace import upper, unupper
-from numba import njit
 
 def happend(x, col_data, col_name:str):
     if not x.dtype.fields:

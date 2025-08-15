@@ -291,7 +291,8 @@ def evaluate_pipeline(
     X: np.ndarray,
     y: np.ndarray,
     pipeline_steps: List[Tuple[str, Any]],
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    return_predictions: bool = False
+) -> pd.DataFrame:
     """
     Evaluate a pipeline with adaptation using subject-wise cross-validation.
     
@@ -305,18 +306,16 @@ def evaluate_pipeline(
         - is_background: int (0 or 1)
     y : array-like
         Target labels
-    covariance_transformer : object
-        Transformer to convert samples to covariance matrices
     pipeline_steps : list of tuples
         Steps for the pipeline
-    use_background : bool, default=False
-        Whether to use background samples for adaptation
+    return_predictions : bool, default=False
+        If True, return detailed predictions instead of aggregated metrics
         
     Returns
     -------
-    tuple of (pd.DataFrame, pd.DataFrame)
-        - First DataFrame contains per-subject metrics
-        - Second DataFrame contains descriptive statistics of the metrics
+    pd.DataFrame
+        If return_predictions=False: DataFrame with per-subject metrics reshaped to long format
+        If return_predictions=True: DataFrame with columns ['true_label', 'predicted_label', 'subject_id', 'sample_index']
     """
     # Create pipeline
     pipeline = OnlinePipeline(pipeline_steps)
@@ -328,6 +327,7 @@ def evaluate_pipeline(
     
     # Store results
     results = []
+    predictions = []
     
     # Perform cross-validation
     for train_idx, test_idx in tqdm(cv.split(X, y, subject_ids), 
@@ -378,29 +378,42 @@ def evaluate_pipeline(
             y_pred.append(pred)
             y_true.append(y_test[i])
             y_score.append(score)
+            
+            # Store detailed predictions if requested
+            if return_predictions:
+                predictions.append({
+                    'true_label': y_test[i],
+                    'predicted_label': pred,
+                    'subject_id': subject_id,
+                    'sample_index': i
+                })
         
-        # Calculate metrics
-        metrics = {
-            'subject': subject_id,
-            'accuracy': accuracy_score(y_true, y_pred),
-            'precision': precision_score(y_true, y_pred, zero_division=0),
-            'recall': recall_score(y_true, y_pred, zero_division=0),
-            'f1': f1_score(y_true, y_pred, zero_division=0),
-        }
-        if not np.isnan(y_score).any():
-            metrics['auc'] = roc_auc_score(y_true, y_score)
-        else:
-            metrics['auc'] = np.nan
+        # Calculate metrics only if not returning predictions
+        if not return_predictions:
+            metrics = {
+                'subject': subject_id,
+                'accuracy': accuracy_score(y_true, y_pred),
+                'precision': precision_score(y_true, y_pred, zero_division=0),
+                'recall': recall_score(y_true, y_pred, zero_division=0),
+                'f1': f1_score(y_true, y_pred, zero_division=0),
+            }
+            if not np.isnan(y_score).any():
+                metrics['auc'] = roc_auc_score(y_true, y_score)
+            else:
+                metrics['auc'] = np.nan
+            
+            results.append(metrics)
+    
+    if return_predictions:
+        return pd.DataFrame(predictions)
+    else:
+        # Create per-subject metrics DataFrame
+        metrics_df = pd.DataFrame(results)
+        # Reshape to have subject, measure, value columns
+        metrics_df = metrics_df.melt(
+            id_vars=['subject'],
+            var_name='measure',
+            value_name='value'
+        )
         
-        results.append(metrics)
-    
-    # Create per-subject metrics DataFrame
-    metrics_df = pd.DataFrame(results)
-    # Reshape to have subject, measure, value columns
-    metrics_df = metrics_df.melt(
-        id_vars=['subject'],
-        var_name='measure',
-        value_name='value'
-    )
-    
-    return metrics_df
+        return metrics_df
