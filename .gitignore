@@ -18,3 +18,5 @@ archive/*
 *.png
 *.pkl
 *.egg-info/
+build/
+dist/
