@@ -1,18 +1,150 @@
-from typing import List, Dict, Any
-from sklearn.svm import SVC
-from sklearn.decomposition import KernelPCA
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Type
+
+import numpy as np
 from pyriemann.classification import KNearestNeighbor
 from pyriemann.spatialfilters import CSP
-from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import FunctionTransformer
-from sklearn.neighbors import KNeighborsClassifier
-
-from .transformers import TangentSpaceProjector, ParallelTransportTransformer, ColumnSelector, StructuredCSP, AugmentedDataset, Covariances, SubjectWhiteningTransformer, StructuredColumnTransformer, BackgroundFilterTransformer, ReferenceKNN, reference_weighted_euclidean_distance
-
-from sklearn.pipeline import Pipeline
 from sklearn.base import BaseEstimator
-from typing import List, Tuple, Any, Optional
-import numpy as np
+from sklearn.compose import ColumnTransformer
+from sklearn.decomposition import KernelPCA
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import FunctionTransformer
+from sklearn.svm import SVC
+
+from .eye_removal import EyeRemoval
+from .transformers import (
+    AugmentedDataset,
+    BackgroundFilterTransformer,
+    ColumnSelector,
+    Covariances,
+    ParallelTransportTransformer,
+    ReferenceKNN,
+    StructuredColumnTransformer,
+    StructuredCSP,
+    SubjectWhiteningTransformer,
+    TangentSpaceProjector,
+    reference_weighted_euclidean_distance,
+)
+
+
+@dataclass
+class PipelineConfig:
+    steps: List['PipelineStep']
+
+    def fit_components(
+        self, data: np.ndarray, fitted_components: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Progressive fitting of pipeline components with proper dependency handling"""
+        newly_fitted = {}
+        processed_data = data.copy()
+
+        for step in self.steps:
+            if step.name in fitted_components:
+                component = fitted_components[step.name]
+                wrapped = step.wrap_component(component)
+                processed_data = wrapped.transform(processed_data)
+
+        for step in self.steps:
+            if step.name not in fitted_components:
+                component = step.component_class()
+                component.fit(processed_data)
+                newly_fitted[step.name] = component
+                wrapped = step.wrap_component(component)
+                processed_data = wrapped.transform(processed_data)
+
+        return newly_fitted
+
+    def partial_fit_components(
+        self, data: np.ndarray, fitted_components: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Progressive partial fitting with proper dependency handling"""
+        updated_components = {}
+        processed_data = data.copy()
+
+        for step in self.steps:
+            component = fitted_components[step.name]
+            wrapped_component = step.wrap_component(component)
+
+            if hasattr(component, "partial_fit") and not step.is_classifier:
+                wrapped_component.partial_fit(processed_data)
+
+            processed_data = wrapped_component.transform(processed_data)
+            updated_components[step.name] = component
+
+        return updated_components
+
+    @classmethod
+    def hybrid_pipeline(cls):
+        return cls(
+            steps=[
+                PipelineStep(name="ica", component_class=EyeRemoval),
+                PipelineStep(
+                    name="whitening", component_class=SubjectWhiteningTransformer
+                ),
+                PipelineStep(
+                    name="covariance", component_class=Covariances, is_classifier=False
+                ),
+                PipelineStep(
+                    name="pt", component_class=ParallelTransportTransformer
+                ),
+                PipelineStep(name="csp", component_class=StructuredCSP),
+                PipelineStep(
+                    name="classifier", component_class=SVC, is_classifier=True
+                ),
+            ]
+        )
+
+
+class PipelineStepBase:
+    """Abstract base for pipeline steps to unify transformers and classifiers"""
+
+    def transform(self, data: np.ndarray) -> np.ndarray:
+        """Unified interface for both transform and predict operations"""
+        raise NotImplementedError
+
+    def partial_fit(self, data: np.ndarray, labels: Optional[np.ndarray] = None):
+        """Unified interface for online learning"""
+        raise NotImplementedError
+
+
+class TransformerWrapper(PipelineStepBase):
+    def __init__(self, transformer):
+        self.transformer = transformer
+
+    def transform(self, data: np.ndarray) -> np.ndarray:
+        return self.transformer.transform(data)
+
+    def partial_fit(self, data: np.ndarray, labels: Optional[np.ndarray] = None):
+        if hasattr(self.transformer, "partial_fit"):
+            self.transformer.partial_fit(data)
+
+
+class ClassifierWrapper(PipelineStepBase):
+    def __init__(self, classifier):
+        self.classifier = classifier
+
+    def transform(self, data: np.ndarray) -> np.ndarray:
+        return self.classifier.predict(data)
+
+    def partial_fit(self, data: np.ndarray, labels: Optional[np.ndarray] = None):
+        if hasattr(self.classifier, "partial_fit") and labels is not None:
+            self.classifier.partial_fit(data, labels)
+
+
+@dataclass
+class PipelineStep:
+    name: str
+    component_class: Type
+    is_classifier: bool = False
+
+    def wrap_component(self, component) -> PipelineStepBase:
+        """Wrap transformer or classifier with unified interface"""
+        if self.is_classifier:
+            return ClassifierWrapper(component)
+        else:
+            return TransformerWrapper(component)
+
 
 N_NEIGHBORS = 25
 N_FILTERS = 10
@@ -138,22 +270,22 @@ BACKGROUND_FILTER = [
 
 GENERAL_PIPELINE_STEPS = [
     [
-        WHITENING, []
+        WHITENING
     ],
     [
         BACKGROUND_FILTER
     ],
     [
-        AUGMENTED_OAS_COV, OAS_COV
+        AUGMENTED_OAS_COV
     ],
     [
-        PT_CSP_TANGENT, SIMPLE_CSP, PT_CSP_LOG, CSP_PT_TANGENT
+        SIMPLE_CSP
     ],
     [
-        KPCA_REDUCTION, []
+        []
     ],
     [
-        SVC_CLASSIFICATION, KNN_NO_DISTANCE_CLASSIFICATION, KNN_DISTANCE_CLASSIFICATION
+        SVC_CLASSIFICATION
     ]
 ]
 

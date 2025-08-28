@@ -5,7 +5,7 @@ import multiprocessing as mp
 from queue import Empty
 
 
-async def tcp_sender(queue: mp.Queue, host: str, port: int):
+async def tcp_sender_async(queue: mp.Queue, host: str, port: int):
     """Async process that handles TCP connection and sending results"""
     writer = None
     retries = 0
@@ -55,4 +55,26 @@ async def tcp_sender(queue: mp.Queue, host: str, port: int):
 
 def tcp_sender_process(queue: mp.Queue, host: str, port: int):
     """Process that runs the TCP sender"""
-    asyncio.run(tcp_sender(queue, host, port))
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(tcp_sender_async(queue, host, port))
+
+
+class TCPSender:
+    def __init__(self, queue: mp.Queue, host: str, port: int):
+        self.queue = queue
+        self.host = host
+        self.port = port
+        self.process = None
+
+    def start(self):
+        self.process = mp.Process(
+            target=tcp_sender_process, args=(self.queue, self.host, self.port)
+        )
+        self.process.start()
+        logging.info("TCP sender process started")
+
+    def stop(self):
+        if self.process and self.process.is_alive():
+            self.process.terminate()
+            self.process.join()
+            logging.info("TCP sender process stopped")
