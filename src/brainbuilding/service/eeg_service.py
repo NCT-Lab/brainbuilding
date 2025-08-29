@@ -17,11 +17,12 @@ TCP_PORT = 12345
 
 class ProcessingState(IntEnum):
     IDLE = 0
-    BLINK_PHASE_1 = 1
-    EYE_MOVEMENT = 2
-    BLINK_PHASE_2 = 3
-    BACKGROUND = 4
-    INFERENCE = 5
+    EYE_WARMUP_DESC = 1
+    EYE_WARMUP_BLINK = 2
+    EYE_WARMUP_TEXT = 3
+    EYE_WARMUP_MOVE = 4
+    BACKGROUND = 5
+    INFERENCE = 6
 
 
 class LogicalGroup(IntEnum):
@@ -40,7 +41,7 @@ class TransitionAction(IntEnum):
 @dataclass
 class StateDefinition:
     name: ProcessingState
-    accepted_events: Dict[str, ProcessingState]
+    accepted_events: Dict[int, ProcessingState]
     data_collection_group: Optional[LogicalGroup] = None
     on_entry_actions: Optional[List[TransitionAction]] = None
     on_exit_actions: Optional[List[TransitionAction]] = None
@@ -242,56 +243,75 @@ class StateManager:
     def _build_declarative_state_machine(
         self,
     ) -> Dict[ProcessingState, StateDefinition]:
+        EYE_WARMUP_DESC = 1
+        EYE_WARMUP_BLINK = 2
+        EYE_WARMUP_TEXT = 3
+        EYE_WARMUP_MOVE = 4
+        BACKGROUND = 5
+        TASK_PERIOD = 10
         return {
             ProcessingState.IDLE: StateDefinition(
                 name=ProcessingState.IDLE,
                 accepted_events={
-                    "CALIBRATION_START": ProcessingState.BLINK_PHASE_1
+                    EYE_WARMUP_DESC: ProcessingState.EYE_WARMUP_DESC,
+                    BACKGROUND: ProcessingState.BACKGROUND,
+                    TASK_PERIOD: ProcessingState.INFERENCE,
                 },
             ),
-            ProcessingState.BLINK_PHASE_1: StateDefinition(
-                name=ProcessingState.BLINK_PHASE_1,
+
+            ProcessingState.EYE_WARMUP_DESC: StateDefinition(
+                name=ProcessingState.EYE_WARMUP_DESC,
                 accepted_events={
-                    "BLINK_END": ProcessingState.EYE_MOVEMENT,
-                    "EYE_MOVE_START": ProcessingState.EYE_MOVEMENT,
+                    EYE_WARMUP_BLINK: ProcessingState.EYE_WARMUP_BLINK,
+                    BACKGROUND: ProcessingState.BACKGROUND,
+                },
+            ),
+            ProcessingState.EYE_WARMUP_BLINK: StateDefinition(
+                name=ProcessingState.EYE_WARMUP_BLINK,
+                accepted_events={
+                    EYE_WARMUP_TEXT: ProcessingState.EYE_WARMUP_TEXT,
+                    BACKGROUND: ProcessingState.BACKGROUND,
+                    EYE_WARMUP_BLINK: ProcessingState.EYE_WARMUP_BLINK,
                 },
                 data_collection_group=LogicalGroup.EYE_MOVEMENT,
             ),
-            ProcessingState.EYE_MOVEMENT: StateDefinition(
-                name=ProcessingState.EYE_MOVEMENT,
+            ProcessingState.EYE_WARMUP_TEXT: StateDefinition(
+                name=ProcessingState.EYE_WARMUP_TEXT,
                 accepted_events={
-                    "BLINK_START": ProcessingState.BLINK_PHASE_1,
-                    "BLINK_END": ProcessingState.BLINK_PHASE_2,
-                    "EYE_MOVE_END": ProcessingState.BLINK_PHASE_2,
-                    "CALIBRATION_END": ProcessingState.BACKGROUND,
+                    EYE_WARMUP_MOVE: ProcessingState.EYE_WARMUP_MOVE,
+                    BACKGROUND: ProcessingState.BACKGROUND,
                 },
-                data_collection_group=LogicalGroup.EYE_MOVEMENT,
             ),
-            ProcessingState.BLINK_PHASE_2: StateDefinition(
-                name=ProcessingState.BLINK_PHASE_2,
+            ProcessingState.EYE_WARMUP_MOVE: StateDefinition(
+                name=ProcessingState.EYE_WARMUP_MOVE,
                 accepted_events={
-                    "BLINK_END": ProcessingState.EYE_MOVEMENT,
-                    "EYE_MOVE_START": ProcessingState.EYE_MOVEMENT,
-                    "CALIBRATION_END": ProcessingState.BACKGROUND,
+                    EYE_WARMUP_BLINK: ProcessingState.EYE_WARMUP_BLINK,
+                    EYE_WARMUP_TEXT: ProcessingState.EYE_WARMUP_TEXT,
+                    BACKGROUND: ProcessingState.BACKGROUND,
                 },
                 data_collection_group=LogicalGroup.EYE_MOVEMENT,
                 on_exit_actions=[TransitionAction.FIT],
             ),
             ProcessingState.BACKGROUND: StateDefinition(
                 name=ProcessingState.BACKGROUND,
-                accepted_events={"BACKGROUND_END": ProcessingState.INFERENCE},
+                accepted_events={
+                    TASK_PERIOD: ProcessingState.INFERENCE,
+                },
                 data_collection_group=LogicalGroup.BACKGROUND,
                 on_exit_actions=[TransitionAction.FIT],
             ),
             ProcessingState.INFERENCE: StateDefinition(
                 name=ProcessingState.INFERENCE,
-                accepted_events={"RESET": ProcessingState.IDLE},
+                accepted_events={
+                    EYE_WARMUP_DESC: ProcessingState.EYE_WARMUP_DESC,
+                    BACKGROUND: ProcessingState.BACKGROUND,
+                },
                 data_collection_group=LogicalGroup.INFERENCE,
                 on_entry_actions=[TransitionAction.PREDICT, TransitionAction.PARTIAL_FIT],
             ),
         }
 
-    def handle_events(self, events: List[str]):
+    def handle_events(self, events: List[int]):
         for event in events:
             current_state_def = self.states[self.current_state]
 
