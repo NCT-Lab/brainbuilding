@@ -6,7 +6,7 @@ from enum import IntEnum
 from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
-from pylsl import StreamInlet, resolve_stream
+from pylsl import StreamInlet, resolve_stream  # type: ignore
 
 from brainbuilding.service.signal import OnlineSignalFilter
 from brainbuilding.service.tcp_sender import TCPSender
@@ -359,12 +359,21 @@ class StateManager:
                 result = future.result()
                 if op_id.startswith("fit_") or op_id.startswith("partial_fit_"):
                     self.fitted_components.update(result)
-                    self.pipeline_ready = True
+                    self.pipeline_ready = self._have_all_components()
                     print(f"Async operation {op_id} completed successfully")
                 completed_ops.append(op_id)
 
         for op_id in completed_ops:
             del self.pending_operations[op_id]
+
+    def _have_all_components(self) -> bool:
+        """Check if all pipeline steps are available in fitted_components."""
+        try:
+            return all(
+                step.name in self.fitted_components for step in self.pipeline_config.steps
+            )
+        except Exception:
+            return False
 
     def _handle_fit(self, data_group: LogicalGroup):
         if not self.grouped_samples[data_group]:

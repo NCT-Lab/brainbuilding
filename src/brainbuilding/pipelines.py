@@ -2,29 +2,23 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Type
 
 import numpy as np
-from pyriemann.classification import KNearestNeighbor
-from pyriemann.spatialfilters import CSP
-from sklearn.base import BaseEstimator
-from sklearn.compose import ColumnTransformer
-from sklearn.decomposition import KernelPCA
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import FunctionTransformer
-from sklearn.svm import SVC
+from sklearn.svm import SVC  # type: ignore
+from pyriemann.spatialfilters import CSP  # type: ignore
+from sklearn.decomposition import KernelPCA  # type: ignore
+from sklearn.neighbors import KNeighborsClassifier  # type: ignore
+from sklearn.pipeline import Pipeline  # type: ignore
 
 from .eye_removal import EyeRemoval
 from .transformers import (
+    Covariances,
+    ParallelTransportTransformer,
+    StructuredCSP,
+    SubjectWhiteningTransformer,
     AugmentedDataset,
     BackgroundFilterTransformer,
     ColumnSelector,
-    Covariances,
-    ParallelTransportTransformer,
-    ReferenceKNN,
-    StructuredColumnTransformer,
-    StructuredCSP,
-    SubjectWhiteningTransformer,
     TangentSpaceProjector,
-    reference_weighted_euclidean_distance,
+    StructuredColumnTransformer,
 )
 
 
@@ -36,22 +30,37 @@ class PipelineConfig:
         self, data: np.ndarray, fitted_components: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Progressive fitting of pipeline components with proper dependency handling"""
-        newly_fitted = {}
-        processed_data = data.copy()
+        newly_fitted: Dict[str, Any] = {}
 
-        for step in self.steps:
-            if step.name in fitted_components:
-                component = fitted_components[step.name]
-                wrapped = step.wrap_component(component)
-                processed_data = wrapped.transform(processed_data)
+        # Walk steps in order; for each step i, transform input through
+        # only previously available steps (existing or newly fitted in this call),
+        # then fit step i if it's missing.
+        for i, step in enumerate(self.steps):
+            # Build processed_data by passing through prior steps 0..i-1
+            processed_data: Optional[np.ndarray] = data
+            for j in range(i):
+                prev = self.steps[j]
+                prev_component = (
+                    fitted_components.get(prev.name)
+                    if prev.name in fitted_components
+                    else newly_fitted.get(prev.name)
+                )
+                if prev_component is None:
+                    # Prior step not yet available; cannot fit step i in this pass
+                    processed_data = None
+                    break
+                if processed_data is not None:
+                    processed_data = prev.wrap_component(prev_component).transform(
+                        processed_data
+                    )
 
-        for step in self.steps:
-            if step.name not in fitted_components:
+            if processed_data is None:
+                continue
+
+            if processed_data is not None and step.name not in fitted_components:
                 component = step.component_class()
                 component.fit(processed_data)
                 newly_fitted[step.name] = component
-                wrapped = step.wrap_component(component)
-                processed_data = wrapped.transform(processed_data)
 
         return newly_fitted
 
@@ -148,65 +157,6 @@ class PipelineStep:
 
 N_NEIGHBORS = 25
 N_FILTERS = 10
-
-# Parallel Transport -> Tangent Space -> KNN
-# PT_TANGENT_KNN_STEPS = [
-#     ('pt', ParallelTransportTransformer(include_means=True)),
-#     ('project-tangent', TangentSpaceProjector()),
-#     ('selector', ColumnSelector(fields='sample')),
-#     ('knn', KNeighborsClassifier(n_neighbors=N_NEIGHBORS, weights='distance'))
-# ]
-
-# # Parallel Transport -> Tangent Space -> KernelPCA -> KNN
-# PT_TANGENT_KPCA_KNN_STEPS = [
-#     ('pt', ParallelTransportTransformer(include_means=True)),
-#     ('project-tangent', TangentSpaceProjector()),
-#     ('selector', ColumnSelector(fields='sample')),
-#     ('kpca', KernelPCA(n_components=N_FILTERS, kernel='rbf', gamma=0.035)),
-#     ('knn', KNeighborsClassifier(n_neighbors=N_NEIGHBORS, weights='distance'))
-# ]
-
-# # Parallel Transport -> CSP (no log) -> Riemannian KNN
-# PT_CSP_KNN_STEPS = [
-#     ('pt', ParallelTransportTransformer(include_means=True)),
-#     ('csp', StructuredCSP(field='sample', nfilter=N_FILTERS, log=False, metric='riemann')),
-#     ('tangent-space', TangentSpaceProjector()),
-#     ('selector', ColumnSelector(fields='sample')),
-#     ('knn', KNeighborsClassifier(n_neighbors=N_NEIGHBORS, weights='distance'))
-# ]
-
-# # Parallel Transport -> CSP (with log) -> SVC
-# PT_CSP_SVC_STEPS = [
-#     ('pt', ParallelTransportTransformer()),
-#     ('selector', ColumnSelector(fields='sample')),
-#     ('csp', CSP(nfilter=N_FILTERS, log=True, metric='riemann')),
-#     ('svc', SVC(kernel='rbf', C=0.696, gamma=0.035, class_weight=None, probability=True))
-# ]
-
-# # CSP -> Parallel Transport -> Tangent Space -> SVC
-# CSP_PT_TANGENT_SVC_STEPS = [
-#     ('csp', StructuredCSP(field='sample', nfilter=N_FILTERS, log=False, metric='riemann')),
-#     ('pt', ParallelTransportTransformer(include_means=True)),
-#     ('tangent-space', TangentSpaceProjector()),
-#     ('selector', ColumnSelector(fields='sample')),
-#     ('svc', SVC(kernel='rbf', C=0.696, gamma=0.035, class_weight=None, probability=True))
-# ]
-
-# # CSP -> Parallel Transport -> Tangent Space -> KNN
-# CSP_PT_TANGENT_KNN_STEPS = [
-#     ('csp', StructuredCSP(field='sample', nfilter=N_FILTERS, log=False, metric='riemann')),
-#     ('pt', ParallelTransportTransformer(include_means=True)),
-#     ('tangent-space', TangentSpaceProjector()),
-#     ('selector', ColumnSelector(fields='sample')),
-#     ('knn', KNeighborsClassifier(n_neighbors=N_NEIGHBORS, weights='distance'))
-# ]
-
-# # CSP -> SVC
-# CSP_SVC_STEPS = [
-#     ('selector', ColumnSelector(fields='sample')),
-#     ('csp', CSP(nfilter=N_FILTERS, log=True, metric='riemann')),
-#     ('svc', SVC(kernel='rbf', C=0.696, gamma=0.035, class_weight=None, probability=True))
-# ]
 
 
 SIMPLE_CSP = [
