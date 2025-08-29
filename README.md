@@ -8,8 +8,7 @@
 
 ### Install (using uv)
 ```bash
-cd /Users/qwerty/git-repos/brainbuilding-tests
-uv sync  # creates and populates .venv from pyproject.toml / uv.lock
+uv sync  # creates and populates .venv from pyproject.toml
 ```
 
 You can run any command without activating the venv using `uv run`:
