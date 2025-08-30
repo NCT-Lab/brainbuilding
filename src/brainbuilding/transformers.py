@@ -1,17 +1,17 @@
-from typing import Dict, Tuple, Optional
+from typing import Dict, Optional
 import numpy as np
-from sklearn.base import BaseEstimator, TransformerMixin
-from pyriemann.utils.mean import mean_riemann
-from scipy.linalg import sqrtm
-from pyriemann.utils.tangentspace import tangent_space 
-from pyriemann.estimation import Covariances
-from pyriemann.utils.base import invsqrtm   
-from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import FunctionTransformer
-from pyriemann.spatialfilters import CSP
+from sklearn.base import BaseEstimator, TransformerMixin  # type: ignore
+from pyriemann.utils.mean import mean_riemann  # type: ignore
+from scipy.linalg import sqrtm  # type: ignore
+from pyriemann.utils.tangentspace import tangent_space  # type: ignore
+from pyriemann.estimation import Covariances  # type: ignore
+from pyriemann.utils.base import invsqrtm   # type: ignore
+from pyriemann.spatialfilters import CSP  # type: ignore
 from .context import _IN_PREDICTION_PHASE
-import numpy.lib.recfunctions as rfn
-from pyriemann.utils.tangentspace import upper, unupper
+from pyriemann.utils.tangentspace import upper, unupper  # type: ignore
+from functools import partial
+from sklearn.neighbors import KNeighborsClassifier  # type: ignore
+ 
 
 def happend(x, col_data, col_name:str):
     if not x.dtype.fields:
@@ -58,13 +58,18 @@ class ParallelTransportTransformer(BaseEstimator, TransformerMixin):
         Total number of samples used for general mean estimation
     """
     
-    def __init__(self, mock_fit: bool = False, include_means: bool = False):
+    def __init__(self, mock_fit: bool = False, include_means: bool = False,
+                 prevent_subject_drift: bool = True,
+                 subject_min_samples_for_transform: int = 1):
         self.subject_means_: Dict[int, np.ndarray] = {}
         self.general_mean_: Optional[np.ndarray] = None
         self.subject_counts_: Dict[int, int] = {}
         self.total_count_: int = 0
         self.mock_fit = mock_fit
         self.include_means = include_means
+        self.prevent_subject_drift: bool = prevent_subject_drift
+        self.subject_min_samples_for_transform: int = subject_min_samples_for_transform
+        self.max_samples_for_subject: int = 0
     
     def get_subject_means(self) -> Dict[int, np.ndarray]:
         """
@@ -177,6 +182,7 @@ class ParallelTransportTransformer(BaseEstimator, TransformerMixin):
         )
         self.general_mean_inv_ = np.linalg.inv(self.general_mean_)
         self.total_count_ = len(covariances)
+        self.max_samples_for_subject = int(np.mean(list(self.subject_counts_.values())))
         
         return self
     
@@ -207,42 +213,69 @@ class ParallelTransportTransformer(BaseEstimator, TransformerMixin):
         if self.general_mean_ is None:
             return self.fit(X, y)
         
-        # Update subject means
+        # Update subjects with capping to avoid exceeding max_samples_for_subject
         unique_subjects = np.unique(subject_ids)
+        accepted_covariances_list: list[np.ndarray] = []
+        accepted_weights_list: Optional[list[float]] = [] if custom_weights is not None else None
+        accepted_increment = 0
         for subject in unique_subjects:
             mask = subject_ids == subject
             subject_covs = covariances[mask]
             
+            # global mean drift prevention logic
+            current_count = self.subject_counts_.get(int(subject), 0)
+            if self.prevent_subject_drift:
+                allow_n = max(0, self.max_samples_for_subject - current_count)
+                allow_n = min(allow_n, len(subject_covs))
+            else:
+                allow_n = len(subject_covs)
+            if allow_n == 0:
+                continue
+            
+            selected_covs = subject_covs[:allow_n]
+            accepted_covariances_list.extend(list(selected_covs))
+            if custom_weights is None:
+                increment = allow_n
+                subj_weights = [1] * allow_n
+            else:
+                subj_weights_arr = np.asarray(custom_weights)[mask][:allow_n]
+                increment = int(np.sum(subj_weights_arr))
+                subj_weights = list(subj_weights_arr)
+                if accepted_weights_list is not None:
+                    accepted_weights_list.extend(subj_weights)
+            
             if subject in self.subject_means_:
-                # Update existing subject mean
                 old_mean = self.subject_means_[subject]
                 old_count = self.subject_counts_[subject]
-                if custom_weights is None:
-                    weights = [old_count] + [1] * len(subject_covs)
-                else:
-                    weights = [old_count] + list(custom_weights[mask])
+                weights = [old_count] + subj_weights
                 self.subject_means_[subject] = mean_riemann(
-                    np.array([old_mean] + list(subject_covs)),
+                    np.array([old_mean] + list(selected_covs)),
                     sample_weight=np.array(weights, dtype=np.float64)
                 )
-                self.subject_counts_[subject] += len(subject_covs) if custom_weights is None else sum(custom_weights[mask])
+                self.subject_counts_[subject] = old_count + increment
             else:
-                # Initialize new subject mean
-                self.subject_means_[subject] = mean_riemann(subject_covs)
-                self.subject_counts_[subject] = len(subject_covs) if custom_weights is None else sum(custom_weights[mask])
-        
-        # Update general mean
+                self.subject_means_[subject] = mean_riemann(selected_covs)
+                self.subject_counts_[subject] = increment
+            accepted_increment += increment
+
+        # If nothing accepted, return unchanged
+        if len(accepted_covariances_list) == 0:
+            return self
+
+        # Update general mean using accepted samples only
         if custom_weights is None:
-            weights = [self.total_count_] + [1] * len(covariances)
+            general_weights = [float(self.total_count_)] + [1.0] * len(accepted_covariances_list)
         else:
-            weights = [self.total_count_] + list(custom_weights)
+            assert accepted_weights_list is not None
+            general_weights = [float(self.total_count_)] + [float(w) for w in accepted_weights_list]
         self.general_mean_ = mean_riemann(
-            np.array([self.general_mean_] + list(covariances)),
-            sample_weight=np.array(weights, dtype=np.float64)
+            np.array([self.general_mean_] + accepted_covariances_list),
+            sample_weight=np.array(general_weights, dtype=np.float64)
         )
+        assert self.general_mean_ is not None
         self.general_mean_inv_ = np.linalg.inv(self.general_mean_)
-        self.total_count_ += len(covariances) if custom_weights is None else sum(custom_weights)
-        
+        self.total_count_ += accepted_increment
+
         return self
     
     def transform(self, X: np.ndarray) -> np.ndarray:
@@ -262,14 +295,13 @@ class ParallelTransportTransformer(BaseEstimator, TransformerMixin):
         if self.mock_fit:
             return self._extract_covariances(X)
         
-        # Extract data from structured array
         covariances = self._extract_covariances(X)
         subject_ids = self._extract_subject_ids(X)
         
-        # Initialize output array
         X_transformed = np.zeros_like(covariances)
         
-        # Initialize arrays for subject and general means if needed
+        if self.general_mean_ is None:
+            raise ValueError("Transformer not fitted: general mean is not available")
         general_means_inv = np.zeros_like(covariances) if self.include_means else None
         general_means = np.zeros_like(covariances) if self.include_means else None
         
@@ -281,17 +313,20 @@ class ParallelTransportTransformer(BaseEstimator, TransformerMixin):
             # Get subject mean
             M = self.subject_means_[subject]
             
-            # Save subject mean and general mean if requested
             if self.include_means:
+                assert general_means_inv is not None and general_means is not None
                 general_means_inv[i] = self.general_mean_inv_
                 general_means[i] = self.general_mean_
             
-            # Compute transformation matrix E = (GM^-1)^1/2
-            GM_inv = np.dot(self.general_mean_, np.linalg.inv(M))
-            E = sqrtm(GM_inv)
-            
-            # Apply transformation: ESE^T
-            X_transformed[i] = np.dot(np.dot(E, cov), E.T)
+            if self.subject_counts_.get(int(subject), 0) < self.subject_min_samples_for_transform:
+                raise ValueError("Transformer not tuned for this subject: not enough samples")
+            else:
+                # Compute transformation matrix E = (GM^-1)^1/2
+                GM_inv = np.dot(self.general_mean_, np.linalg.inv(M))
+                E = sqrtm(GM_inv)
+                
+                # Apply transformation: ESE^T
+                X_transformed[i] = np.dot(np.dot(E, cov), E.T)
         
         # Create structured array with transformed data
         X_transformed_structured = happend(X, X_transformed, 'sample')
@@ -762,9 +797,7 @@ class BackgroundFilterTransformer(BaseEstimator, TransformerMixin):
     def fit_transform(self, X, y=None):
         return self.fit(X, y).transform(X)
 
-from functools import partial
-from sklearn.neighbors import KNeighborsClassifier
-
+ 
 class ReferenceKNN(KNeighborsClassifier):
     def fit(self, X, y):
         # we are assuming that the first sample is the reference
