@@ -37,7 +37,7 @@ dependencies = [
     "seaborn>=0.13.0",
     "pyaml>=24.9.0",
     "pyneurostim @ git+https://github.com/VladimirR46/pyneurostim.git@b022759f96466304ad600c0f48fb5397bd6fcd17",
-    "pylsl>=1.16.2",
+    "pylsl==1.16.2",
 ]
 
 [tool.setuptools]

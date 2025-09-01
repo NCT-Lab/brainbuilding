@@ -10,9 +10,7 @@ from pylsl import StreamInlet, resolve_stream  # type: ignore
 
 from brainbuilding.service.signal import OnlineSignalFilter
 from brainbuilding.service.tcp_sender import TCPSender
-
-TCP_HOST = "127.0.0.1"
-TCP_PORT = 12345
+from brainbuilding.config import DEFAULT_TCP_HOST, DEFAULT_TCP_PORT, DEFAULT_TCP_RETRIES
 
 
 class ProcessingState(IntEnum):
@@ -185,6 +183,7 @@ class PointProcessor:
 
     def process(self, sample: np.ndarray) -> np.ndarray:
         """Process a single raw sample"""
+        sample = np.array(sample).reshape(1, -1)
         referenced = sample - sample[:, REF_CHANNEL_IND : REF_CHANNEL_IND + 1]
         scaled = referenced / 1_000_000
         selected = scaled[:, CHANNELS_MASK]
@@ -501,17 +500,20 @@ class StateManager:
 
 
 class EEGService:
-    def __init__(self, pipeline_config):
+    def __init__(self, pipeline_config, tcp_host: str | None = None, tcp_port: int | None = None, tcp_retries: int | None = None):
         self.stream_manager = StreamManager()
         self.executor = ProcessPoolExecutor()
         self.point_processor = PointProcessor(
             sfreq=250, n_channels=len(CHANNELS_TO_KEEP)
         )
-        self.output_queue = mp.Queue()
+        self.output_queue: mp.Queue = mp.Queue()
         self.state_manager = StateManager(
             pipeline_config, self.executor, self.output_queue
         )
-        self.tcp_sender = TCPSender(self.output_queue, TCP_HOST, TCP_PORT)
+        host = tcp_host if tcp_host is not None else DEFAULT_TCP_HOST
+        port = tcp_port if tcp_port is not None else DEFAULT_TCP_PORT
+        retries = tcp_retries if tcp_retries is not None else DEFAULT_TCP_RETRIES
+        self.tcp_sender = TCPSender(self.output_queue, host, port, retries)
 
     def run(self):
         """Main processing loop"""

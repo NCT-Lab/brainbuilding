@@ -594,12 +594,17 @@ def main(argv=None):
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    _ = args_to_config(args)
+    config = args_to_config(args)
 
     # Lazy import to avoid pylsl dependency during training
     from brainbuilding.service.eeg_service import EEGService
     pipeline_config = PipelineConfig.hybrid_pipeline()
-    service = EEGService(pipeline_config)
+    service = EEGService(
+        pipeline_config,
+        tcp_host=config.tcp_host,
+        tcp_port=config.tcp_port,
+        tcp_retries=config.tcp_retries,
+    )
 
     if not args.no_preload:
         pretrained = _load_pretrained_components(args.preload_dir)
