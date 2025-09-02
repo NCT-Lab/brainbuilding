@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Type
 
 import numpy as np
+from sklearn.base import ClassifierMixin  # type: ignore
 from sklearn.svm import SVC  # type: ignore
 from pyriemann.spatialfilters import CSP  # type: ignore
 from sklearn.decomposition import KernelPCA  # type: ignore
@@ -30,83 +31,66 @@ from .transformers import (
 class PipelineConfig:
     steps: List['PipelineStep']
 
-    def fit_components(
-        self, data: np.ndarray, fitted_components: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Progressive fitting of pipeline components with proper dependency handling"""
-        newly_fitted: Dict[str, Any] = {}
-
-        # Walk steps in order; for each step i, transform input through
-        # only previously available steps (existing or newly fitted in this call),
-        # then fit step i if it's missing.
-        for i, step in enumerate(self.steps):
-            processed_data: Optional[np.ndarray] = data
-            for j in range(i):
-                prev = self.steps[j]
-                prev_component = (
-                    fitted_components.get(prev.name)
-                    if prev.name in fitted_components
-                    else newly_fitted.get(prev.name)
-                )
-                if prev_component is None:
-                    # If previous step does not require fitting, instantiate on-demand
-                    if not prev.requires_fit:
-                        init_kwargs_prev = prev.init_params or {}
-                        prev_component = prev.component_class(**init_kwargs_prev)
-                        newly_fitted[prev.name] = prev_component
-                    else:
-                        # Prior step requiring fit is not yet available; cannot proceed in this pass
-                        processed_data = None
-                        break
-                if processed_data is not None:
-                    processed_data = prev.wrap_component(prev_component).transform(
-                        processed_data
-                    )
-
-            if processed_data is None:
-                continue
-
-            if processed_data is not None and step.name not in fitted_components:
-                init_kwargs = step.init_params or {}
-                component = step.component_class(**init_kwargs)
-                if step.requires_fit and not step.is_classifier:
-                    component.fit(processed_data)
-                    newly_fitted[step.name] = component
-                else:
-                    newly_fitted[step.name] = component
-
-        return newly_fitted
-
     def partial_fit_components(
         self, data: np.ndarray, fitted_components: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Progressive partial fitting with proper dependency handling"""
-        updated_components = {}
-        processed_data = data.copy()
+        """Single forward pass partial-fit and transform sequentially for available steps."""
+        updated_components: Dict[str, Any] = {}
+        current: np.ndarray = data
 
-        for idx, step in enumerate(self.steps):
+        for step in self.steps:
             component = fitted_components.get(step.name)
-            if component is None and not step.requires_fit:
-                # Instantiate stateless step on-demand during partial fit
-                init_kwargs = step.init_params or {}
-                component = step.component_class(**init_kwargs)
-                updated_components[step.name] = component
-            elif component is not None:
-                updated_components[step.name] = component
-
-            component = updated_components.get(step.name)
             if component is None:
-                # Skip steps that require fitting but are not yet available
-                break
+                if not step.requires_fit:
+                    init_kwargs = step.init_params or {}
+                    component = step.component_class(**init_kwargs)
+                    updated_components[step.name] = component
+                else:
+                    break
+            else:
+                updated_components[step.name] = component
 
-            wrapped_component = step.wrap_component(component)
-
+            wrapped = step.wrap_component(component)
             if step.requires_fit and hasattr(component, "partial_fit") and not step.is_classifier:
-                wrapped_component.partial_fit(processed_data)
-
-            processed_data = wrapped_component.transform(processed_data)
+                wrapped.partial_fit(current)
+            current = wrapped.transform(current)
 
         return updated_components
+
+    def fit_next_stateful(
+        self,
+        data: np.ndarray,
+        fitted_components: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Fit only the first stateful (requires_fit=True) step that isn't fitted yet.
+
+        Stateless steps are instantiated as needed to prepare the input (single forward pass).
+        No transforms are applied beyond the fitted step.
+        """
+        newly_fitted: Dict[str, Any] = {}
+        current: np.ndarray = data
+
+        for step in self.steps:
+            component = (
+                fitted_components.get(step.name)
+                if step.name in fitted_components
+                else newly_fitted.get(step.name)
+            )
+
+            if component is None:
+                init_kwargs = step.init_params or {}
+                component = step.component_class(**init_kwargs)
+                if step.requires_fit and not step.is_classifier:
+                    component.fit(current)
+                    newly_fitted[step.name] = component
+                    break
+                else:
+                    newly_fitted[step.name] = component
+
+            wrapped = step.wrap_component(component)
+            current = wrapped.transform(current)
+
+        return newly_fitted
 
     @classmethod
     def hybrid_pipeline(cls):
@@ -140,7 +124,7 @@ class PipelineConfig:
                     component_class=Covariances,
                     is_classifier=False,
                     init_params={"estimator": "oas"},
-                    requires_fit=True,
+                    requires_fit=False,
                 ),
                 PipelineStep(
                     name="to_structured",
@@ -206,11 +190,25 @@ class TransformerWrapper(PipelineStepBase):
 
 
 class ClassifierWrapper(PipelineStepBase):
-    def __init__(self, classifier):
-        self.classifier = classifier
+    def __init__(self, classifier: ClassifierMixin):
+        self.classifier: ClassifierMixin = classifier
 
     def transform(self, data: np.ndarray) -> np.ndarray:
-        return self.classifier.predict(data)
+        # Return [predicted_label, predicted_probability] for downstream consumption
+        try:
+            if hasattr(self.classifier, "predict_proba"):
+                proba = self.classifier.predict_proba(data)
+                if proba.ndim == 2 and proba.shape[0] >= 1:
+                    pred_idx = int(np.argmax(proba[0]))
+                    pred = self.classifier.classes_[pred_idx] if hasattr(self.classifier, "classes_") else pred_idx
+                    conf = float(np.max(proba[0]))
+                    return np.array([pred, conf])
+        except Exception:
+            pass
+
+        pred_arr = self.classifier.predict(data)
+        pred = int(pred_arr[0]) if hasattr(pred_arr, "__len__") else int(pred_arr)
+        return np.array([pred, 1.0])
 
     def partial_fit(self, data: np.ndarray, labels: Optional[np.ndarray] = None):
         if hasattr(self.classifier, "partial_fit") and labels is not None:

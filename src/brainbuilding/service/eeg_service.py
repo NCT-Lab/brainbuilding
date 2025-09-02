@@ -43,6 +43,7 @@ class StateDefinition:
     data_collection_group: Optional[LogicalGroup] = None
     on_entry_actions: Optional[List[TransitionAction]] = None
     on_exit_actions: Optional[List[TransitionAction]] = None
+    on_transition_actions: Optional[Dict[ProcessingState, List[TransitionAction]]] = None
 
 
 @dataclass
@@ -131,30 +132,40 @@ def process_window_in_pool(
     fitted_components: Dict[str, Any],
     pipeline_config: Any,
     window_metadata: WindowMetadata,
-) -> ClassificationResult:
+) -> Optional[ClassificationResult]:
     """Pure inference pipeline with unified transformer/classifier interface"""
     start_time = time.time()
 
     data = window_data
-    for step in pipeline_config.steps:
-        component = fitted_components[step.name]
-        wrapped_component = step.wrap_component(component)
-        data = wrapped_component.transform(data)
-
-    processing_time = time.time() - start_time
-
-    prediction = int(data[0]) if isinstance(data, np.ndarray) else int(data)
-    probability = (
-        float(data[1]) if hasattr(data, "__len__") and len(data) > 1 else 1.0
-    )
-
-    return ClassificationResult(
-        prediction=prediction,
-        probability=probability,
-        pipeline_type="hybrid",
-        processing_time=processing_time,
-        window_metadata=window_metadata,
-    )
+    try:
+        for step in pipeline_config.steps:
+            component = fitted_components[step.name]
+            wrapped_component = step.wrap_component(component)
+            data = wrapped_component.transform(data)
+        processing_time = time.time() - start_time
+        # Expect classifier wrapper to output [pred, proba]
+        if isinstance(data, np.ndarray) and data.ndim == 1 and data.shape[0] >= 2:
+            prediction = int(data[0])
+            probability = float(data[1])
+        else:
+            prediction = int(data[0]) if isinstance(data, np.ndarray) else int(data)
+            probability = float(data[1]) if (hasattr(data, "__len__") and len(data) > 1) else 1.0
+        print(f"Prediction: {prediction}, Probability: {probability}, Processing Time: {processing_time}")
+        return ClassificationResult(
+            prediction=prediction,
+            probability=probability,
+            pipeline_type="hybrid",
+            processing_time=processing_time,
+            window_metadata=window_metadata,
+        )
+    except KeyError as e:
+        processing_time = time.time() - start_time
+        print(f"Inference failed: missing component {e}")
+        return None
+    except ValueError as e:
+        processing_time = time.time() - start_time
+        print(f"Inference failed: {e}")
+        return None
 
 
 class StreamManager:
@@ -289,7 +300,9 @@ class StateManager:
                     BACKGROUND: ProcessingState.BACKGROUND,
                 },
                 data_collection_group=LogicalGroup.EYE_MOVEMENT,
-                on_exit_actions=[TransitionAction.FIT],
+                on_transition_actions={
+                    ProcessingState.BACKGROUND: [TransitionAction.FIT]
+                },
             ),
             ProcessingState.BACKGROUND: StateDefinition(
                 name=ProcessingState.BACKGROUND,
@@ -327,6 +340,11 @@ class StateManager:
         old_state_def = self.states[old_state]
         new_state_def = self.states[next_state]
 
+        if old_state_def.on_transition_actions:
+            actions = old_state_def.on_transition_actions.get(next_state, [])
+            for action in actions:
+                self.action_handlers[action](old_state_def.data_collection_group)
+
         if old_state_def.on_exit_actions:
             for action in old_state_def.on_exit_actions:
                 self.action_handlers[action](
@@ -361,14 +379,10 @@ class StateManager:
             self.grouped_samples[group].extend(samples)
             self.grouped_timestamps[group].extend(timestamps)
 
-        if (
-            self.inference_active
-            and self.pipeline_ready
-            and len(self.processed_samples) >= self.window_size
-        ):
+        if self.inference_active and len(self.processed_samples) >= self.window_size:
             self._maybe_process_latest_window()
 
-        if self.partial_fit_active and self.pipeline_ready:
+        if self.partial_fit_active:
             self._maybe_partial_fit_latest_window()
 
     def _check_pending_operations(self):
@@ -402,8 +416,9 @@ class StateManager:
         group_data = np.array(self.grouped_samples[data_group]).T[None, :, :] # (n_times, n_channels) -> (1, n_channels, n_times)
         op_id = f"fit_{data_group.name}_{len(self.pending_operations)}"
 
+        # Fit only the next unfitted stateful step in pipeline order
         future = self.executor.submit(
-            self.pipeline_config.fit_components,
+            self.pipeline_config.fit_next_stateful,
             group_data,
             self.fitted_components,
         )
@@ -427,7 +442,10 @@ class StateManager:
 
     def _handle_prediction_result(self, future: Future):
         """Callback for completed prediction futures."""
-        result: ClassificationResult = future.result()
+        result = future.result()
+        if result is None:
+            print("Inference skipped for this window (incomplete pipeline or invalid data)")
+            return
         if self.queue:
             self.queue.put(asdict(result))
 

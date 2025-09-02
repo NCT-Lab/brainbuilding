@@ -7,7 +7,7 @@ import json
 with open("data/raw-dataset-2/1/Task.json") as f:
     EVENTS = json.load(f)
 
-{
+event_map = {
     'EyeWarmupDesc': 1,
     'EyeWarmupBlink': 2,
     'EyeWarmupText': 3,
@@ -82,36 +82,21 @@ class MockLSLSender:
     async def run(self):
         """Run the mock LSL sender."""
         print("Starting synchronized streaming...")
+        await asyncio.sleep(0.5)
         
-        # Get temporally ordered samples across all streams
         synchronized_samples = self._create_synchronized_iterator()
-
-        # new_synchronized_samples = []
-        # for ind, sample in enumerate(synchronized_samples):
-        #     if sample[1] =='NeuroStim-Events' and self.get_sample_type(sample[3][0]) in ["Rest", "Animation"]:
-        #         new_synchronized_samples = synchronized_samples[ind - 65000:]
-        #         break
-        # synchronized_samples = new_synchronized_samples
-        # temp = [(0, 'NeoRec21-1247', 0, [0]*21)]*100
-        # synchronized_samples = temp + [(1, 'NeuroStim-Events', 0, [0])] + temp + [(2, 'NeuroStim-Events', 0, [1])] + temp + [(3, 'NeuroStim-Events', 0, [2])] + temp
         
-        # Stream samples in temporal order
         for timestamp, stream_name, sample_idx, sample in synchronized_samples:
             sample_id = sample[0]
             outlet = self.outlets[stream_name]['outlet']
-            # if stream_name == "Brainbuilding-Events":
-            #     if self.get_sample_type(sample[0]) == "Rest":
-            #         sample = [0]
-            #     elif self.get_sample_type(sample[0]) == "Animation":
-            #         sample = [1]
-            #     else:
-            #         sample = [2]
 
-            outlet.push_sample(sample, timestamp)
             if stream_name == "Brainbuilding-Events":
                 print(f"Event {self.get_sample_type(sample_id)} from {stream_name} at {timestamp:.3f}")
+                print(sample)
+                sample = [event_map[self.get_sample_type(sample_id)], 0]
             else:
                 pass
+            outlet.push_sample(sample, timestamp)
             await asyncio.sleep(1/500)
             
         print("Finished streaming all data")
