@@ -357,6 +357,98 @@ class ParallelTransportTransformer(BaseEstimator, TransformerMixin):
         return self.fit(X, y).transform(X)
     
 
+class SimpleWhiteningTransformer(BaseEstimator, TransformerMixin):
+    """
+    Whitening that operates on plain arrays without any assumptions about labels.
+    
+    Expects X with shape (n_samples, n_channels, n_times). Computes a single
+    whitening matrix from all provided samples and applies it per sample.
+    """
+    def __init__(self, n_channels: int):
+        self.W_: Optional[np.ndarray] = None
+        self.n_channels = n_channels
+
+    def fit(self, X, y=None):
+        if X.ndim == 3:
+            n_samples, n_channels, _ = X.shape
+            assert n_channels == self.n_channels
+            background_concat = np.concatenate([X[i] for i in range(n_samples)], axis=1)
+        elif X.ndim == 2:
+            n_channels, _ = X.shape
+            assert n_channels == self.n_channels
+            background_concat = X
+        else:
+            raise ValueError("SimpleWhiteningTransformer expects X of shape (n_samples, n_channels, n_times) or (n_channels, n_times)")
+                
+        cov = Covariances(estimator='oas').transform(background_concat[np.newaxis, :, :])[0]
+        self.W_ = invsqrtm(cov)
+        return self
+
+    def transform(self, X):
+        if self.W_ is None:
+            raise ValueError("Transformer not fitted")
+        Xw = np.zeros_like(X)
+        if X.ndim == 3:
+            n_samples, n_channels, _ = X.shape
+            assert n_channels == self.n_channels
+            for i in range(n_samples):
+                Xw[i] = self.W_ @ X[i]
+        elif X.ndim == 2:
+            n_channels, _ = X.shape
+            assert n_channels == self.n_channels
+            Xw = self.W_ @ X
+        return Xw
+
+
+class StructuredArrayBuilder(BaseEstimator, TransformerMixin):
+    """
+    Utility to convert plain arrays into structured arrays required by
+    structured transformers (e.g., ParallelTransportTransformer).
+    
+    Parameters
+    ----------
+    subject_id : int, default=0
+        Subject identifier to assign to all samples.
+    sample_field : str, default='sample'
+        Field name to store the per-sample matrices.
+    """
+    def __init__(self, subject_id: int = 0, sample_field: str = 'sample'):
+        self.subject_id = int(subject_id)
+        self.sample_field = sample_field
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        if X.ndim != 3:
+            raise ValueError("StructuredArrayBuilder expects X of shape (n_samples, n_channels, n_times)")
+        n = X.shape[0]
+        dtype = [(self.sample_field, X.dtype, X.shape[1:]), ('subject_id', np.int64)]
+        out = np.empty(n, dtype=dtype)
+        out[self.sample_field] = X
+        out['subject_id'] = self.subject_id
+        return out
+
+
+class StructuredToArray(BaseEstimator, TransformerMixin):
+    """
+    Extract a field from a structured array into a plain ndarray for
+    downstream transformers that don't support structured arrays.
+    """
+    def __init__(self, field: str = 'sample'):
+        self.field = field
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        if not hasattr(X, 'dtype') or X.dtype.names is None:
+            raise ValueError("StructuredToArray expects a structured array input")
+        if self.field not in X.dtype.names:
+            raise ValueError(f"Field '{self.field}' not found in input")
+        return X[self.field]
+
+
 class TangentSpaceProjector(BaseEstimator, TransformerMixin):
     """
     A transformer that projects matrices to tangent space using the general mean matrices.

@@ -7,6 +7,7 @@ from pyriemann.spatialfilters import CSP  # type: ignore
 from sklearn.decomposition import KernelPCA  # type: ignore
 from sklearn.neighbors import KNeighborsClassifier  # type: ignore
 from sklearn.pipeline import Pipeline  # type: ignore
+from brainbuilding.config import CHANNELS_TO_KEEP
 
 from .eye_removal import EyeRemoval
 from .transformers import (
@@ -19,6 +20,9 @@ from .transformers import (
     ColumnSelector,
     TangentSpaceProjector,
     StructuredColumnTransformer,
+    StructuredArrayBuilder,
+    StructuredToArray,
+    SimpleWhiteningTransformer,
 )
 
 
@@ -36,7 +40,6 @@ class PipelineConfig:
         # only previously available steps (existing or newly fitted in this call),
         # then fit step i if it's missing.
         for i, step in enumerate(self.steps):
-            # Build processed_data by passing through prior steps 0..i-1
             processed_data: Optional[np.ndarray] = data
             for j in range(i):
                 prev = self.steps[j]
@@ -46,9 +49,15 @@ class PipelineConfig:
                     else newly_fitted.get(prev.name)
                 )
                 if prev_component is None:
-                    # Prior step not yet available; cannot fit step i in this pass
-                    processed_data = None
-                    break
+                    # If previous step does not require fitting, instantiate on-demand
+                    if not prev.requires_fit:
+                        init_kwargs_prev = prev.init_params or {}
+                        prev_component = prev.component_class(**init_kwargs_prev)
+                        newly_fitted[prev.name] = prev_component
+                    else:
+                        # Prior step requiring fit is not yet available; cannot proceed in this pass
+                        processed_data = None
+                        break
                 if processed_data is not None:
                     processed_data = prev.wrap_component(prev_component).transform(
                         processed_data
@@ -58,9 +67,13 @@ class PipelineConfig:
                 continue
 
             if processed_data is not None and step.name not in fitted_components:
-                component = step.component_class()
-                component.fit(processed_data)
-                newly_fitted[step.name] = component
+                init_kwargs = step.init_params or {}
+                component = step.component_class(**init_kwargs)
+                if step.requires_fit and not step.is_classifier:
+                    component.fit(processed_data)
+                    newly_fitted[step.name] = component
+                else:
+                    newly_fitted[step.name] = component
 
         return newly_fitted
 
@@ -71,15 +84,27 @@ class PipelineConfig:
         updated_components = {}
         processed_data = data.copy()
 
-        for step in self.steps:
-            component = fitted_components[step.name]
+        for idx, step in enumerate(self.steps):
+            component = fitted_components.get(step.name)
+            if component is None and not step.requires_fit:
+                # Instantiate stateless step on-demand during partial fit
+                init_kwargs = step.init_params or {}
+                component = step.component_class(**init_kwargs)
+                updated_components[step.name] = component
+            elif component is not None:
+                updated_components[step.name] = component
+
+            component = updated_components.get(step.name)
+            if component is None:
+                # Skip steps that require fitting but are not yet available
+                break
+
             wrapped_component = step.wrap_component(component)
 
-            if hasattr(component, "partial_fit") and not step.is_classifier:
+            if step.requires_fit and hasattr(component, "partial_fit") and not step.is_classifier:
                 wrapped_component.partial_fit(processed_data)
 
             processed_data = wrapped_component.transform(processed_data)
-            updated_components[step.name] = component
 
         return updated_components
 
@@ -87,19 +112,70 @@ class PipelineConfig:
     def hybrid_pipeline(cls):
         return cls(
             steps=[
-                PipelineStep(name="ica", component_class=EyeRemoval),
                 PipelineStep(
-                    name="whitening", component_class=SubjectWhiteningTransformer
+                    name="ica",
+                    component_class=EyeRemoval,
+                    init_params={
+                        "n_components": None,
+                        "remove_veog": True,
+                        "remove_heog": True,
+                        "random_state": 42,
+                    },
+                    requires_fit=True,
                 ),
                 PipelineStep(
-                    name="covariance", component_class=Covariances, is_classifier=False
+                    name="whitening",
+                    component_class=SimpleWhiteningTransformer,
+                    init_params={"n_channels": len(CHANNELS_TO_KEEP)},
+                    requires_fit=True,
                 ),
                 PipelineStep(
-                    name="pt", component_class=ParallelTransportTransformer
+                    name="augmentation",
+                    component_class=AugmentedDataset,
+                    init_params={"order": 4, "lag": 8},
+                    requires_fit=False,
                 ),
-                PipelineStep(name="csp", component_class=StructuredCSP),
                 PipelineStep(
-                    name="classifier", component_class=SVC, is_classifier=True
+                    name="covariance",
+                    component_class=Covariances,
+                    is_classifier=False,
+                    init_params={"estimator": "oas"},
+                    requires_fit=True,
+                ),
+                PipelineStep(
+                    name="to_structured",
+                    component_class=StructuredArrayBuilder,
+                    init_params={"subject_id": 0, "sample_field": "sample"},
+                    requires_fit=False,
+                ),
+                PipelineStep(
+                    name="pt",
+                    component_class=ParallelTransportTransformer,
+                    init_params={
+                        "include_means": False,
+                        "prevent_subject_drift": True,
+                        "subject_min_samples_for_transform": 5,
+                    },
+                    requires_fit=True,
+                ),
+                PipelineStep(
+                    name="from_structured",
+                    component_class=StructuredToArray,
+                    init_params={"field": "sample"},
+                    requires_fit=False,
+                ),
+                PipelineStep(
+                    name="csp",
+                    component_class=CSP,
+                    init_params={"nfilter": 10, "log": False, "metric": "riemann"},
+                    requires_fit=True,
+                ),
+                PipelineStep(
+                    name="classifier",
+                    component_class=SVC,
+                    is_classifier=True,
+                    init_params={"kernel": "rbf", "C": 0.696, "gamma": 0.035, "class_weight": None, "probability": True},
+                    requires_fit=True,
                 ),
             ]
         )
@@ -146,6 +222,8 @@ class PipelineStep:
     name: str
     component_class: Type
     is_classifier: bool = False
+    init_params: Optional[Dict[str, Any]] = None
+    requires_fit: bool = True
 
     def wrap_component(self, component) -> PipelineStepBase:
         """Wrap transformer or classifier with unified interface"""

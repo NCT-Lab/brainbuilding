@@ -6,17 +6,25 @@ from scipy import stats
 from .config import PICK_CHANNELS
 
 class EyeRemoval(BaseEstimator, TransformerMixin):
-    def __init__(self, n_components, veog_data, heog_data, remove_veog=True, remove_heog=True, random_state=42):
-        self.ica = FastICA(n_components=n_components, random_state=random_state)
-        self.veog_data = veog_data
-        self.heog_data = heog_data
+    def __init__(self, n_components=None, remove_veog=True, remove_heog=True, random_state=42):
+        self.n_components = n_components
         self.remove_veog = remove_veog
         self.remove_heog = remove_heog
+        self.random_state = random_state
+        self.ica = None
         
     def fit(self, X, y=None):
+        if X.ndim == 3:
+            X = np.squeeze(X)
+        n_components = self.n_components if self.n_components is not None else X.shape[0]
+        self.ica = FastICA(n_components=n_components, random_state=self.random_state)
+
         X_transformed = self.ica.fit_transform(X.T).T
-        veog_correlations = np.array([stats.pearsonr(source, self.veog_data)[0] for source in X_transformed])
-        heog_correlations = np.array([stats.pearsonr(source, self.heog_data)[0] for source in X_transformed])
+
+        veog, heog = create_standard_eog_channels(X)
+
+        veog_correlations = np.array([stats.pearsonr(source, veog)[0] for source in X_transformed])
+        heog_correlations = np.array([stats.pearsonr(source, heog)[0] for source in X_transformed])
         self.veog_idx = np.argmax(np.abs(veog_correlations))
         self.heog_idx = np.argmax(np.abs(heog_correlations))
         if self.veog_idx == self.heog_idx:
@@ -26,12 +34,19 @@ class EyeRemoval(BaseEstimator, TransformerMixin):
         return self
     
     def transform(self, X):
-        X_transformed = self.ica.transform(X.T)
+        if X.ndim == 3:
+            X_temp = np.squeeze(X)
+        else:
+            X_temp = X
+
+        X_transformed = self.ica.transform(X_temp.T)
         if self.remove_veog:
             X_transformed[:, self.veog_idx] = 0
         if self.remove_heog:
             X_transformed[:, self.heog_idx] = 0
         X_transformed = self.ica.inverse_transform(X_transformed).T
+        if X.ndim == 3:
+            X_transformed = X_transformed[None, :, :]
         return X_transformed
     
     def fit_transform(self, X, y=None):

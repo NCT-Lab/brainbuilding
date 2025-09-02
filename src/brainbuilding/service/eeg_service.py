@@ -399,7 +399,7 @@ class StateManager:
             print(f"No data available for fitting from {data_group.name}")
             return
 
-        group_data = np.array(self.grouped_samples[data_group])
+        group_data = np.array(self.grouped_samples[data_group]).T[None, :, :] # (n_times, n_channels) -> (1, n_channels, n_times)
         op_id = f"fit_{data_group.name}_{len(self.pending_operations)}"
 
         future = self.executor.submit(
@@ -446,7 +446,7 @@ class StateManager:
         if samples_since_last >= self.step_size:
             window_data = np.array(
                 self.processed_samples[-self.window_size :]
-            ).T
+            ).T[None, :, :] # (n_times, n_channels) -> (1, n_channels, n_times)
             window_timestamps = self.samples_timestamps[-self.window_size :]
 
             window_metadata = WindowMetadata(
@@ -481,7 +481,7 @@ class StateManager:
             window_slice = samples_buffer[
                 start_index : start_index + self.partial_fit_window_size
             ]
-            window_data = np.array(window_slice).T
+            window_data = np.array(window_slice).T[None, :, :] # (n_times, n_channels) -> (1, n_channels, n_times)
 
             op_id = f"partial_fit_window_{group.name}_{self.window_id}_{len(self.pending_operations)}"
             future = self.executor.submit(
