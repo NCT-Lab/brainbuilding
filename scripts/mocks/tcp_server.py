@@ -26,22 +26,21 @@ class TCPServer:
 
     def handle_client(self, client_socket):
         try:
-            data = b""
+            buffer = b""
             while True:
-                chunk = client_socket.recv(1024)
+                chunk = client_socket.recv(4096)
                 if not chunk:
                     break
-                data += chunk
-
-            if data:
-                try:
-                    json_data = json.loads(data.decode('utf-8'))
-                    print("Received JSON data:")
-                    print(json.dumps(json_data, indent=2))
-                except json.JSONDecodeError as e:
-                    print(f"Error decoding JSON: {e}")
-                    print("Received raw data:", data.decode('utf-8'))
-
+                buffer += chunk
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
+                    if not line:
+                        continue
+                    try:
+                        msg = json.loads(line.decode('utf-8'))
+                        print("Received:", json.dumps(msg, ensure_ascii=False))
+                    except json.JSONDecodeError as e:
+                        print(f"Bad JSON line: {line!r} ({e})")
         except Exception as e:
             print(f"Error handling client: {e}")
         finally:

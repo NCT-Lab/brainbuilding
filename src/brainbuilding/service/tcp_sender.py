@@ -15,6 +15,9 @@ async def tcp_sender_async(queue: mp.Queue, host: str, port: int, max_retries: i
             print(f"Connecting to {host}:{port}")
             reader, writer = await asyncio.open_connection(host, port)
             logging.info("TCP connection established")
+            handshake = {"type": "handshake", "client_name": "eeg-processor"}
+            writer.write(json.dumps(handshake).encode() + b"\n")
+            await writer.drain()
             break
         except ConnectionRefusedError:
             retries += 1
@@ -31,11 +34,16 @@ async def tcp_sender_async(queue: mp.Queue, host: str, port: int, max_retries: i
         while True:
             try:
                 result = queue.get_nowait()
-                message = result
-                data = json.dumps(message).encode() + b"\n"
+                if isinstance(result, dict):
+                    payload = dict(result)
+                    if payload.get("type") is None:
+                        payload["type"] = "data"
+                else:
+                    payload = {"type": "data", "payload": result}
+                data = json.dumps(payload).encode() + b"\n"
                 writer.write(data)
                 await writer.drain()
-                logging.info(f"Sent classification result: {result}")
+                logging.info(f"Sent message: {payload.get('type')}")
             except Empty:
                 await asyncio.sleep(0.0001)
             except Exception as e:
