@@ -1,0 +1,22 @@
+---
+alwaysApply: true
+globs: *.py
+description: Enforce strict Python exception-handling rules
+---
+
+## Python Exception Handling Rules
+
+- Never catch base exceptions:
+  - Do not use `except Exception:`
+  - Do not use `except BaseException:`
+
+- Do not add try/except blocks unless explicitly instructed by the user for a specific case.
+
+- If explicitly instructed to catch exceptions:
+  - Catch the most specific exception type(s) only
+  - Keep the try block as small as possible
+  - Do not silently swallow errors (no bare `except:` or `pass`-only handlers)
+  - Prefer re-raising with context (`raise` or `raise NewError from e`) if appropriate
+
+- Prefer guard checks and letting exceptions propagate naturally over blanket handling.
+

@@ -1,0 +1,47 @@
+---
+globs: *.py
+description: Enforce no getattr for critical paths, crash fast on missing attrs, and use strict typing for dynamic enums/config.
+---
+
+# Python: No getattr for critical logic + strict typing for dynamic config
+
+Adopt fail-fast, strictly-typed patterns. Avoid dynamic attribute access that hides errors and breaks static analysis.
+
+## Core rules
+
+- Do not use getattr for critical attributes, enum members, or config fields.
+  - Prefer direct access (obj.attr). If it can be absent, validate earlier and raise a precise error.
+  - For truly optional attributes, check with hasattr(obj, "attr") and branch explicitly; do not use getattr with defaults.
+
+- Dynamic enums (loaded from YAML) must be strictly typed:
+  - Annotate as `ProcessingState: type[IntEnum]`, `LogicalGroup: type[IntEnum]`, `current_state: IntEnum`.
+  - Access enum members directly via names validated from config, never via getattr.
+  - Use `.name` on enum members directly; do not wrap in getattr.
+
+- YAML/Pydantic config should validate presence/shape of all required fields.
+  - If a referenced state, event, or group is missing, raise `ValueError` or `RuntimeError` during load/build, not at runtime.
+  - Keep try/except narrow and specific per the exception policy.
+
+- Action/group resolution should be explicit and ordered, not dynamic lookups with defaults:
+  - Priority example: per-transition override → per-state override → state default `data_collection_group`.
+  - Use clear dict access with `in` checks; avoid getattr/dynamic fallbacks.
+
+## Patterns to prefer
+
+- Validate config early, then use direct access:
+  - Good:
+    - `if state_name not in state_enum.__members__: raise ValueError(...)`
+    - `group = state_def.action_groups[action] if action in state_def.action_groups else state_def.data_collection_group`
+  - Bad:
+    - `group = getattr(state_def, 'action_groups', {}).get(action, getattr(state_def, 'data_collection_group', None))`
+
+- Enum usage:
+  - Good: `self.current_state.name`, `self.LogicalGroup['INFERENCE']`, `self.ProcessingState['IDLE']`
+  - Bad: `getattr(self.current_state, 'name', str(self.current_state))`, `getattr(self.LogicalGroup, 'INFERENCE', None)`
+
+## References
+
+- State config and validation: [src/brainbuilding/service/state_config.py](mdc:src/brainbuilding/service/state_config.py)
+- State types and definitions: [src/brainbuilding/service/state_types.py](mdc:src/brainbuilding/service/state_types.py)
+- State manager usage: [src/brainbuilding/service/eeg_service.py](mdc:src/brainbuilding/service/eeg_service.py)
+

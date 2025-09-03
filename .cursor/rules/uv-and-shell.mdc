@@ -1,0 +1,25 @@
+---
+alwaysApply: true
+description: Shell and tooling conventions for this repository
+---
+## Shell and Tooling Conventions
+
+- **Use uv**: Run Python tools with `uv`. Prefer `uvx` for CLIs and `uv run` for scripts.
+  - Ruff format: 
+    ```bash
+    uvx ruff format .
+    ```
+  - Ruff autofix and check:
+    ```bash
+    uvx ruff check --fix .
+    uvx ruff check .
+    ```
+
+- **Do not change directories**: The working directory is already the project root. Avoid `cd`.
+
+- **Paths**: Prefer absolute paths when invoking tools and editing files.
+
+- **Non-interactive defaults**: Pass non-interactive flags when needed. If a command would use a pager, append `| cat`.
+
+- **Background jobs**: For long-running commands, run them in the background instead of blocking the shell.
+

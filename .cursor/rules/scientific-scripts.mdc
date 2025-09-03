@@ -1,0 +1,68 @@
+---
+alwaysApply: false
+---
+General Context & Purpose:
+You are assisting in writing Python scripts for scientific research, analysis, and hypothesis testing.
+Assume the primary goal is clarity, correctness, and reproducibility.
+The code should be straightforward and easy for a researcher to understand and debug.
+Error Handling Philosophy: No Implicit Suppression
+- **AVOID `try-except` blocks by default.** Do not wrap code in `try-except` unless explicitly instructed by the user for a specific, well-defined reason (e.g., handling expected file I/O issues gracefully, catching specific exceptions from external libraries where failure is anticipated and needs a specific fallback).
+- **Embrace runtime errors.** Errors like `ZeroDivisionError`, `ValueError`, `IndexError`, `TypeError`, `AttributeError`, etc., are crucial feedback during scientific development. They often indicate issues with the data, assumptions, or the mathematical/logical procedure itself. These should *not* be hidden or bypassed implicitly.
+- **Example (MinMax Scaler):** When implementing standard mathematical operations like MinMax scaling, use the direct formula.
+  - **DO THIS:**
+    ```python
+    import numpy as np
+    # Assuming dist_matrix is a NumPy array
+    min_val = np.min(dist_matrix)
+    max_val = np.max(dist_matrix)
+    # This will correctly raise ZeroDivisionError if max_val == min_val
+    scaled_matrix = (dist_matrix - min_val) / (max_val - min_val)
+    ```
+  - **DO NOT DO THIS (Avoid "Hacks"):** Do not add checks like `if (max_val - min_val) == 0:` to return a default value or add a small epsilon *unless specifically requested*. The `ZeroDivisionError` itself is informative – it tells the user the data range is zero, prompting them to reconsider if scaling is needed or appropriate for constant data. Seeing the error is the desired outcome. The goal is mathematical transparency, not just code that runs without crashing regardless of input validity.
+
+Implementation Choices: Prioritize Existing Solutions
+- **Leverage standard libraries heavily.** Use functions and classes from well-established scientific libraries (NumPy, SciPy, Pandas, Scikit-learn, Statsmodels, Matplotlib, Seaborn, etc.) whenever possible.
+- **AVOID reimplementing standard algorithms.** Do not write custom code for tasks like:
+  - Matrix operations (use NumPy/SciPy)
+  - Statistical tests (use SciPy.stats, Statsmodels)
+  - Machine learning models (use Scikit-learn, TensorFlow, PyTorch, etc.)
+  - Data scaling/normalization (use Scikit-learn.preprocessing)
+  - Clustering algorithms (use Scikit-learn.cluster)
+  - Common plotting functions (use Matplotlib/Seaborn)
+  - Data manipulation (use Pandas/NumPy)
+- Only implement algorithms from scratch if the user's explicit goal is to create or test a *new implementation* of that algorithm.
+
+Code Style and Readability:
+- Follow PEP 8 guidelines.
+- Use meaningful variable and function names.
+- Include comments where necessary to explain non-obvious logic or choices, especially related to scientific assumptions or methods.
+- Prefer clear, explicit code over overly complex or "clever" one-liners if readability suffers.
+
+Project Structure:
+- Assume all scripts are being developed within a specific project structure for a given hypothesis or experiment.
+- The standard structure is:
+    scripts/hypothesis-directory-name/
+    ├── results/                # Directory for output files (plots, tables, processed data)
+    └── hypothesis_script.py    # The main Python script for this hypothesis/experiment
+- When generating code that saves files (e.g., plots, CSVs, models), ensure the default save path is within the `results/` subdirectory relative to the script's location. Use relative paths (e.g., `results/my_plot.png`).
+- Example (Saving a plot):
+```python
+import matplotlib.pyplot as plt
+import os
+
+# ... (plotting code) ...
+
+# Ensure results directory exists (optional but good practice)
+results_dir = 'results'
+os.makedirs(results_dir, exist_ok=True)
+
+# Save the plot to the results directory
+plot_filename = os.path.join(results_dir, 'data_visualization.png')
+plt.savefig(plot_filename)
+print(f"Plot saved to {plot_filename}")
+plt.close() # Close plot if generated in a loop or function
+```
+Interaction Model:
+
+If unsure about a specific scientific method, assumption, or implementation detail, ask the user for clarification rather than making a potentially incorrect assumption.
+When asked to implement a specific calculation or analysis, confirm if a standard library function exists before attempting a custom implementation.
