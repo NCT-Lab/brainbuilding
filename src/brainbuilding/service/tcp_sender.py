@@ -5,7 +5,9 @@ import multiprocessing as mp
 from queue import Empty
 
 
-async def tcp_sender_async(queue: mp.Queue, host: str, port: int, max_retries: int):
+async def tcp_sender_async(
+    queue: mp.Queue, host: str, port: int, max_retries: int
+):
     """Async process that handles TCP connection and sending results"""
     writer = None
     retries = 0
@@ -78,7 +80,8 @@ class TCPSender:
     def start(self):
         print(f"Starting TCP sender process for {self.host}:{self.port}")
         self.process = mp.Process(
-            target=tcp_sender_process, args=(self.queue, self.host, self.port, self.retries)
+            target=tcp_sender_process,
+            args=(self.queue, self.host, self.port, self.retries),
         )
         self.process.start()
         logging.info("TCP sender process started")

@@ -20,5 +20,3 @@ def prediction_phase():
         yield
     finally:
         _IN_PREDICTION_PHASE = previous
-
-
