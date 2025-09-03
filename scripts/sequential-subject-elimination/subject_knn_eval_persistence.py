@@ -14,7 +14,7 @@ from gtda.diagrams import PersistenceLandscape
 from sklearn.preprocessing import FunctionTransformer, StandardScaler
 from functools import partial
 from gtda.diagrams import PairwiseDistance, Filtering, Scaler
-from brainbuilding.transformers import (
+from brainbuilding.core.transformers import (
     BackgroundFilterTransformer,
     Covariances,
     StructuredColumnTransformer,

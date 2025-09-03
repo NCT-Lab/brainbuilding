@@ -11,7 +11,7 @@ from pyriemann.utils.tangentspace import tangent_space
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from src.brainbuilding.training import AugmentedDataset
-from src.brainbuilding.config import ORDER, LAG
+from brainbuilding.core.config import ORDER, LAG
 
 ORDER = 1
 LAG = 1

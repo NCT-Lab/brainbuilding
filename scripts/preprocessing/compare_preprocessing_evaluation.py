@@ -14,11 +14,11 @@ from datetime import datetime
 # Add the project root to the path so we can import from src
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from src.brainbuilding.pipelines import (
+from brainbuilding.train.pipelines import (
     WHITENING, BACKGROUND_FILTER, AUGMENTED_OAS_COV,
     PT_CSP_LOG, SIMPLE_CSP, SVC_CLASSIFICATION
 )
-from src.brainbuilding.evaluation import evaluate_pipeline
+from brainbuilding.train.evaluation import evaluate_pipeline
 
 # --- Configuration ---
 STANDARD_DATASET = 'data/preprocessed/motor-imagery-2.npy'

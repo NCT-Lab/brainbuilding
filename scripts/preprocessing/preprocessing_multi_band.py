@@ -15,7 +15,7 @@ from scipy.signal import butter
 # Add the project root to the path so we can import from src
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from src.brainbuilding.config import STANDARD_EVENT_NAME_TO_ID_MAPPING
+from brainbuilding.core.config import STANDARD_EVENT_NAME_TO_ID_MAPPING
 
 
 FIF_DATA_DIR = os.getenv("FIF_DATA_DIR", 'data/fif-dataset-2')

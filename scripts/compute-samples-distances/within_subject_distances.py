@@ -10,7 +10,7 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from src.brainbuilding.training import compute_normalized_augmented_covariances
-from src.brainbuilding.config import ORDER
+from brainbuilding.core.config import ORDER
 
 # Configuration
 INPUT_DATA_DIR = os.getenv("INPUT_DATA_DIR", 'data/preprocessed')

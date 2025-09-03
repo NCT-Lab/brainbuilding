@@ -4,7 +4,7 @@ import math
 from sklearn.pipeline import Pipeline
 from gtda.homology import VietorisRipsPersistence
 from gtda.plotting import plot_diagram
-from brainbuilding.transformers import (
+from brainbuilding.core.transformers import (
     SubjectWhiteningTransformer,
     BackgroundFilterTransformer,
     Covariances,

@@ -4,11 +4,11 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from pathlib import Path
 from sklearn.pipeline import Pipeline
-from brainbuilding.pipelines import (
+from brainbuilding.train.pipelines import (
     GENERAL_PIPELINE_STEPS
 )
 from tqdm import tqdm
-from brainbuilding.evaluation import evaluate_pipeline
+from brainbuilding.train.evaluation import evaluate_pipeline
 import itertools
 
 # Load preprocessed data

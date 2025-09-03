@@ -17,7 +17,7 @@ from datetime import datetime
 # Add the project root to the path so we can import from src
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from src.brainbuilding.config import CSP_METRIC
+from brainbuilding.core.config import CSP_METRIC
 
 # Configuration
 INPUT_DATA_DIR = os.getenv("INPUT_DATA_DIR", 'data/preprocessed')

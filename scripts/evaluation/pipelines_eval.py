@@ -4,7 +4,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from pathlib import Path
 from sklearn.pipeline import Pipeline
-from brainbuilding.pipelines import (
+from brainbuilding.train.pipelines import (
     PT_TANGENT_KNN_STEPS,
     PT_TANGENT_KPCA_KNN_STEPS,
     PT_CSP_KNN_STEPS,
@@ -12,8 +12,8 @@ from brainbuilding.pipelines import (
     CSP_SVC_STEPS
 )
 from tqdm import tqdm
-from brainbuilding.evaluation import evaluate_pipeline_with_adaptation
-from brainbuilding.transformers import AUGMENTED_COVARIANCE_TRANSFORMER_STEPS, COVARIANCE_TRANSFORMER_STEPS
+from brainbuilding.train.evaluation import evaluate_pipeline_with_adaptation
+from brainbuilding.core.transformers import AUGMENTED_COVARIANCE_TRANSFORMER_STEPS, COVARIANCE_TRANSFORMER_STEPS
 
 # Load preprocessed data
 DATASET_FNAME = 'data/preprocessed/motor-imagery-2.npy'

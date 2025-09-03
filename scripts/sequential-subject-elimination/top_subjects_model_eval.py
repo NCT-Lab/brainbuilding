@@ -18,7 +18,7 @@ from datetime import datetime
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from src.brainbuilding.training import AugmentedDataset
-from src.brainbuilding.config import ORDER, LAG, CSP_METRIC
+from brainbuilding.core.config import ORDER, LAG, CSP_METRIC
 
 ORDER = 1
 LAG = 1

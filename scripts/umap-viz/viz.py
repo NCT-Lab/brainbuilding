@@ -10,7 +10,7 @@ from gtda.diagrams import PersistenceLandscape
 from gtda.plotting import plot_diagram
 from gtda.diagrams import PairwiseDistance
 from sklearn.preprocessing import FunctionTransformer
-from brainbuilding.transformers import (
+from brainbuilding.core.transformers import (
     SubjectWhiteningTransformer, 
     BackgroundFilterTransformer, 
     Covariances, 

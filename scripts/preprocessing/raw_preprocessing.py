@@ -10,8 +10,9 @@ from mne.preprocessing import ICA
 # Add the project root to the path so we can import from src
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from src.brainbuilding.eye_removal import EyeRemoval, create_standard_eog_channels
-from src.brainbuilding.config import PICK_CHANNELS, ND_CHANNELS_MASK, ORDER, REMOVE_HEOG, REMOVE_VEOG, LOW_FREQ, HIGH_FREQ
+from brainbuilding.core.transformers import EyeRemoval
+from src.brainbuilding.eye_removal import create_standard_eog_channels
+from brainbuilding.core.config import PICK_CHANNELS, ND_CHANNELS_MASK, ORDER, REMOVE_HEOG, REMOVE_VEOG, LOW_FREQ, HIGH_FREQ
 import os
 
 RAW_DATA_DIR = os.getenv("RAW_DATA_DIR", 'data/raw-dataset-2/')

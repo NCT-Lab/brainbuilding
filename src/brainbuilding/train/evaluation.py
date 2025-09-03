@@ -12,7 +12,7 @@ from typing import List, Any, Tuple
 import pandas as pd
 from sklearn.model_selection import GroupKFold
 from sklearn.pipeline import Pipeline
-from .transformers import (
+from ..core.transformers import (
     ParallelTransportTransformer,
     TangentSpaceProjector,
 )
