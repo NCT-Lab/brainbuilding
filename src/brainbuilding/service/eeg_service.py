@@ -2,48 +2,29 @@ import multiprocessing as mp
 import time
 from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import dataclass, asdict
+from typing import Any, Callable, Dict, List, Optional, Type
 from enum import IntEnum
-from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 from pylsl import StreamInlet, resolve_stream  # type: ignore
 
 from brainbuilding.service.signal import OnlineSignalFilter
 from brainbuilding.service.tcp_sender import TCPSender
-from brainbuilding.config import DEFAULT_TCP_HOST, DEFAULT_TCP_PORT, DEFAULT_TCP_RETRIES
+from brainbuilding.core.config import (
+    DEFAULT_TCP_HOST,
+    DEFAULT_TCP_PORT,
+    DEFAULT_TCP_RETRIES,
+)
 
 
-class ProcessingState(IntEnum):
-    IDLE = 0
-    EYE_WARMUP_DESC = 1
-    EYE_WARMUP_BLINK = 2
-    EYE_WARMUP_TEXT = 3
-    EYE_WARMUP_MOVE = 4
-    BACKGROUND = 5
-    INFERENCE = 6
+from brainbuilding.service.state_types import TransitionAction, StateDefinition
+from brainbuilding.service.state_config import (
+    load_state_machine_from_yaml,
+    StateMachineRuntime,
+)
 
 
-class LogicalGroup(IntEnum):
-    EYE_MOVEMENT = 1
-    BACKGROUND = 2
-    INFERENCE = 3
-
-
-class TransitionAction(IntEnum):
-    DO_NOTHING = 0
-    FIT = 1
-    PARTIAL_FIT = 2
-    PREDICT = 3
-
-
-@dataclass
-class StateDefinition:
-    name: ProcessingState
-    accepted_events: Dict[int, ProcessingState]
-    data_collection_group: Optional[LogicalGroup] = None
-    on_entry_actions: Optional[List[TransitionAction]] = None
-    on_exit_actions: Optional[List[TransitionAction]] = None
-    on_transition_actions: Optional[Dict[ProcessingState, List[TransitionAction]]] = None
+"""StateDefinition is imported from state_types and used directly."""
 
 
 @dataclass
@@ -144,13 +125,25 @@ def process_window_in_pool(
             data = wrapped_component.transform(data)
         processing_time = time.time() - start_time
         # Expect classifier wrapper to output [pred, proba]
-        if isinstance(data, np.ndarray) and data.ndim == 1 and data.shape[0] >= 2:
+        if (
+            isinstance(data, np.ndarray)
+            and data.ndim == 1
+            and data.shape[0] >= 2
+        ):
             prediction = int(data[0])
             probability = float(data[1])
         else:
-            prediction = int(data[0]) if isinstance(data, np.ndarray) else int(data)
-            probability = float(data[1]) if (hasattr(data, "__len__") and len(data) > 1) else 1.0
-        print(f"Prediction: {prediction}, Probability: {probability}, Processing Time: {processing_time}")
+            prediction = (
+                int(data[0]) if isinstance(data, np.ndarray) else int(data)
+            )
+            probability = (
+                float(data[1])
+                if (hasattr(data, "__len__") and len(data) > 1)
+                else 1.0
+            )
+        print(
+            f"Prediction: {prediction}, Probability: {probability}, Processing Time: {processing_time}"
+        )
         return ClassificationResult(
             prediction=prediction,
             probability=probability,
@@ -208,21 +201,26 @@ class PointProcessor:
 
 
 class StateManager:
+    processing_state: Type[IntEnum]
+    logical_group: Type[IntEnum]
+    states: Dict[IntEnum, StateDefinition]
+    current_state: IntEnum
+
     def __init__(
-        self, pipeline_config, executor: ProcessPoolExecutor, queue: mp.Queue
+        self,
+        pipeline_config,
+        executor: ProcessPoolExecutor,
+        queue: mp.Queue,
+        state_config_path: Optional[str] = None,
     ):
         self.pipeline_config = pipeline_config
         self.executor = executor
-        self.current_state = ProcessingState.IDLE
 
         self.processed_samples: List[np.ndarray] = []
         self.samples_timestamps: List[float] = []
-        self.grouped_samples: Dict[LogicalGroup, List[np.ndarray]] = {
-            group: [] for group in LogicalGroup
-        }
-        self.grouped_timestamps: Dict[LogicalGroup, List[float]] = {
-            group: [] for group in LogicalGroup
-        }
+
+        self.grouped_samples: Dict[IntEnum, List[np.ndarray]] = {}
+        self.grouped_timestamps: Dict[IntEnum, List[float]] = {}
 
         self.fitted_components: Dict[str, Any] = {}
         self.pending_operations: Dict[str, Future] = {}
@@ -237,9 +235,8 @@ class StateManager:
 
         self.partial_fit_active = False
         self.partial_fit_window_size = self.window_size
-        self.partial_fit_last_index: Dict[LogicalGroup, int] = {
-            group: 0 for group in LogicalGroup
-        }
+        self.partial_fit_last_index: Dict[IntEnum, int] = {}
+        self._partial_fit_group: Optional[IntEnum] = None
 
         self.action_handlers: Dict[TransitionAction, Callable] = {
             TransitionAction.DO_NOTHING: lambda group: None,
@@ -248,80 +245,29 @@ class StateManager:
             TransitionAction.PREDICT: self._handle_predict,
         }
 
-        self.states = self._build_declarative_state_machine()
-
-    def _build_declarative_state_machine(
-        self,
-    ) -> Dict[ProcessingState, StateDefinition]:
-        EYE_WARMUP_DESC = 1
-        EYE_WARMUP_BLINK = 2
-        EYE_WARMUP_TEXT = 3
-        EYE_WARMUP_MOVE = 4
-        BACKGROUND = 5
-        TASK_PERIOD = 10
-        return {
-            ProcessingState.IDLE: StateDefinition(
-                name=ProcessingState.IDLE,
-                accepted_events={
-                    EYE_WARMUP_DESC: ProcessingState.EYE_WARMUP_DESC,
-                    BACKGROUND: ProcessingState.BACKGROUND,
-                    TASK_PERIOD: ProcessingState.INFERENCE,
-                },
-            ),
-
-            ProcessingState.EYE_WARMUP_DESC: StateDefinition(
-                name=ProcessingState.EYE_WARMUP_DESC,
-                accepted_events={
-                    EYE_WARMUP_BLINK: ProcessingState.EYE_WARMUP_BLINK,
-                    BACKGROUND: ProcessingState.BACKGROUND,
-                },
-            ),
-            ProcessingState.EYE_WARMUP_BLINK: StateDefinition(
-                name=ProcessingState.EYE_WARMUP_BLINK,
-                accepted_events={
-                    EYE_WARMUP_TEXT: ProcessingState.EYE_WARMUP_TEXT,
-                    BACKGROUND: ProcessingState.BACKGROUND,
-                    EYE_WARMUP_BLINK: ProcessingState.EYE_WARMUP_BLINK,
-                },
-                data_collection_group=LogicalGroup.EYE_MOVEMENT,
-            ),
-            ProcessingState.EYE_WARMUP_TEXT: StateDefinition(
-                name=ProcessingState.EYE_WARMUP_TEXT,
-                accepted_events={
-                    EYE_WARMUP_MOVE: ProcessingState.EYE_WARMUP_MOVE,
-                    BACKGROUND: ProcessingState.BACKGROUND,
-                },
-            ),
-            ProcessingState.EYE_WARMUP_MOVE: StateDefinition(
-                name=ProcessingState.EYE_WARMUP_MOVE,
-                accepted_events={
-                    EYE_WARMUP_BLINK: ProcessingState.EYE_WARMUP_BLINK,
-                    EYE_WARMUP_TEXT: ProcessingState.EYE_WARMUP_TEXT,
-                    BACKGROUND: ProcessingState.BACKGROUND,
-                },
-                data_collection_group=LogicalGroup.EYE_MOVEMENT,
-                on_transition_actions={
-                    ProcessingState.BACKGROUND: [TransitionAction.FIT]
-                },
-            ),
-            ProcessingState.BACKGROUND: StateDefinition(
-                name=ProcessingState.BACKGROUND,
-                accepted_events={
-                    TASK_PERIOD: ProcessingState.INFERENCE,
-                },
-                data_collection_group=LogicalGroup.BACKGROUND,
-                on_exit_actions=[TransitionAction.FIT],
-            ),
-            ProcessingState.INFERENCE: StateDefinition(
-                name=ProcessingState.INFERENCE,
-                accepted_events={
-                    EYE_WARMUP_DESC: ProcessingState.EYE_WARMUP_DESC,
-                    BACKGROUND: ProcessingState.BACKGROUND,
-                },
-                data_collection_group=LogicalGroup.INFERENCE,
-                on_entry_actions=[TransitionAction.PREDICT, TransitionAction.PARTIAL_FIT],
-            ),
-        }
+        if state_config_path:
+            runtime: StateMachineRuntime = load_state_machine_from_yaml(
+                state_config_path
+            )
+            self.processing_state = (
+                runtime.processing_state_enum
+            )  # dynamic enums
+            self.logical_group = runtime.logical_group_enum
+            self.states = runtime.states
+            self.current_state = list(runtime.processing_state_enum)[0]
+            # Initialize grouped buffers for dynamic groups
+            self.grouped_samples = {group: [] for group in self.logical_group}
+            self.grouped_timestamps = {
+                group: [] for group in self.logical_group
+            }
+            self.partial_fit_last_index = {
+                group: 0 for group in self.logical_group
+            }
+        else:
+            # Require config; no inline fallback
+            raise RuntimeError(
+                "State machine YAML config path must be provided"
+            )
 
     def handle_events(self, events: List[int]):
         for event in events:
@@ -335,35 +281,72 @@ class StateManager:
                     f"Event '{event}' not accepted in state {self.current_state.name}"
                 )
 
-    def _transition_to(self, next_state: ProcessingState):
+    def _transition_to(self, next_state):
         old_state = self.current_state
         old_state_def = self.states[old_state]
         new_state_def = self.states[next_state]
 
-        if old_state_def.on_transition_actions:
-            actions = old_state_def.on_transition_actions.get(next_state, [])
-            for action in actions:
-                self.action_handlers[action](old_state_def.data_collection_group)
+        self._run_actions_for_trigger(
+            state_def=old_state_def,
+            actions=old_state_def.on_transition_actions.get(next_state, []),
+            trigger="transition",
+            next_state=next_state,
+        )
 
-        if old_state_def.on_exit_actions:
-            for action in old_state_def.on_exit_actions:
-                self.action_handlers[action](
-                    old_state_def.data_collection_group
-                )
+        self._run_actions_for_trigger(
+            state_def=old_state_def,
+            actions=old_state_def.on_exit_actions,
+            trigger="exit",
+        )
 
         self.current_state = next_state
 
-        if new_state_def.on_entry_actions:
-            for action in new_state_def.on_entry_actions:
-                self.action_handlers[action](
-                    new_state_def.data_collection_group
-                )
+        self._run_actions_for_trigger(
+            state_def=new_state_def,
+            actions=new_state_def.on_entry_actions,
+            trigger="entry",
+        )
 
         print(f"State transition: {old_state.name} -> {next_state.name}")
 
-        # Disable partial-fit mode when leaving INFERENCE
-        if old_state == ProcessingState.INFERENCE and next_state != ProcessingState.INFERENCE:
-            self.partial_fit_active = False
+    def _resolve_action_group(
+        self,
+        state_def: StateDefinition,
+        action: TransitionAction,
+        trigger: str,
+        next_state: Optional[IntEnum] = None,
+    ):
+        default_group = state_def.data_collection_group
+        if trigger == "transition":
+            by_next = state_def.on_transition_action_groups
+            actions_map = by_next.get(next_state, {}) if next_state else {}
+            return actions_map.get(action, default_group)
+
+        trigger_map = {
+            "entry": state_def.on_entry_action_groups,
+            "exit": state_def.on_exit_action_groups,
+        }.get(trigger, {})
+
+        return trigger_map.get(action, default_group)
+
+    def _run_actions_for_trigger(
+        self,
+        state_def: StateDefinition,
+        actions: Optional[List[TransitionAction]],
+        trigger: str,
+        next_state: Optional[IntEnum] = None,
+    ) -> None:
+        if not actions:
+            return
+        for action in actions:
+            group = self._resolve_action_group(
+                state_def=state_def,
+                action=action,
+                trigger=trigger,
+                next_state=next_state,
+            )
+            self.action_handlers[action](group)
+
 
     def add_new_samples(
         self, samples: List[np.ndarray], timestamps: List[float]
@@ -379,7 +362,10 @@ class StateManager:
             self.grouped_samples[group].extend(samples)
             self.grouped_timestamps[group].extend(timestamps)
 
-        if self.inference_active and len(self.processed_samples) >= self.window_size:
+        if (
+            self.inference_active
+            and len(self.processed_samples) >= self.window_size
+        ):
             self._maybe_process_latest_window()
 
         if self.partial_fit_active:
@@ -390,7 +376,9 @@ class StateManager:
         for op_id, future in self.pending_operations.items():
             if future.done():
                 result = future.result()
-                if op_id.startswith("fit_") or op_id.startswith("partial_fit_"):
+                if op_id.startswith("fit_") or op_id.startswith(
+                    "partial_fit_"
+                ):
                     self.fitted_components.update(result)
                     self.pipeline_ready = self._have_all_components()
                     print(f"Async operation {op_id} completed successfully")
@@ -403,17 +391,20 @@ class StateManager:
         """Check if all pipeline steps are available in fitted_components."""
         try:
             return all(
-                step.name in self.fitted_components for step in self.pipeline_config.steps
+                step.name in self.fitted_components
+                for step in self.pipeline_config.steps
             )
         except Exception:
             return False
 
-    def _handle_fit(self, data_group: LogicalGroup):
+    def _handle_fit(self, data_group):
         if not self.grouped_samples[data_group]:
             print(f"No data available for fitting from {data_group.name}")
             return
 
-        group_data = np.array(self.grouped_samples[data_group]).T[None, :, :] # (n_times, n_channels) -> (1, n_channels, n_times)
+        group_data = np.array(self.grouped_samples[data_group]).T[
+            None, :, :
+        ]  # (n_times, n_channels) -> (1, n_channels, n_times)
         op_id = f"fit_{data_group.name}_{len(self.pending_operations)}"
 
         # Fit only the next unfitted stateful step in pipeline order
@@ -424,27 +415,42 @@ class StateManager:
         )
         self.pending_operations[op_id] = future
         print(
-            f"Submitted async fit operation {op_id} with {len(group_data)} samples from {data_group.name}"
+            f"Submitted async fit operation {op_id} with"
+            f"{len(group_data)} samples from {data_group.name}"
         )
 
-    def _handle_partial_fit(self, data_group: LogicalGroup):
-        """Enable periodic partial-fit mode for the given logical group."""
+    def _handle_partial_fit(self, data_group):
+        """Toggle periodic partial-fit mode for the given logical group."""
+        if self.partial_fit_active:
+            self.partial_fit_active = False
+            self._partial_fit_group = None
+            print(f"Disabled periodic partial-fit mode for {data_group.name}")
+            return
         self.partial_fit_active = True
+        self._partial_fit_group = data_group
         if data_group not in self.partial_fit_last_index:
             self.partial_fit_last_index[data_group] = 0
         print(
-            f"Enabled periodic partial-fit mode for {data_group.name} with window_size={self.partial_fit_window_size}"
+            f"Enabled periodic partial-fit mode for "
+            f"{data_group.name} with {self.partial_fit_window_size=}"
         )
 
-    def _handle_predict(self, data_group: Optional[LogicalGroup]):
-        print("Starting real-time inference mode")
-        self.inference_active = True
+    def _handle_predict(self, data_group: Optional[IntEnum]):
+        # Toggle inference mode
+        self.inference_active = not self.inference_active
+        print(
+            "Real-time inference mode "
+            + ("enabled" if self.inference_active else "disabled")
+        )
 
     def _handle_prediction_result(self, future: Future):
         """Callback for completed prediction futures."""
         result = future.result()
         if result is None:
-            print("Inference skipped for this window (incomplete pipeline or invalid data)")
+            print(
+                "Inference skipped for this window"
+                "(incomplete pipeline or invalid data)"
+            )
             return
         if self.queue:
             self.queue.put(asdict(result))
@@ -463,8 +469,9 @@ class StateManager:
 
         if samples_since_last >= self.step_size:
             window_data = np.array(
+                # (n_times, n_channels) -> (1, n_channels, n_times)
                 self.processed_samples[-self.window_size :]
-            ).T[None, :, :] # (n_times, n_channels) -> (1, n_channels, n_times)
+            ).T[None, :, :]
             window_timestamps = self.samples_timestamps[-self.window_size :]
 
             window_metadata = WindowMetadata(
@@ -487,7 +494,9 @@ class StateManager:
 
     def _maybe_partial_fit_latest_window(self):
         """Submit non-overlapping partial-fit updates on the active group."""
-        group = LogicalGroup.INFERENCE
+        group = self._partial_fit_group
+        if group is None:
+            return
         samples_buffer = self.grouped_samples[group]
         start_index = self.partial_fit_last_index[group]
 
@@ -495,11 +504,15 @@ class StateManager:
         if available < self.partial_fit_window_size:
             return
 
-        while len(samples_buffer) - start_index >= self.partial_fit_window_size:
+        while (
+            len(samples_buffer) - start_index >= self.partial_fit_window_size
+        ):
             window_slice = samples_buffer[
                 start_index : start_index + self.partial_fit_window_size
             ]
-            window_data = np.array(window_slice).T[None, :, :] # (n_times, n_channels) -> (1, n_channels, n_times)
+            window_data = np.array(window_slice).T[
+                None, :, :
+            ]  # (n_times, n_channels) -> (1, n_channels, n_times)
 
             op_id = f"partial_fit_window_{group.name}_{self.window_id}_{len(self.pending_operations)}"
             future = self.executor.submit(
@@ -518,7 +531,14 @@ class StateManager:
 
 
 class EEGService:
-    def __init__(self, pipeline_config, tcp_host: str | None = None, tcp_port: int | None = None, tcp_retries: int | None = None):
+    def __init__(
+        self,
+        pipeline_config,
+        tcp_host: str | None = None,
+        tcp_port: int | None = None,
+        tcp_retries: int | None = None,
+        state_config_path: Optional[str] = None,
+    ):
         self.stream_manager = StreamManager()
         self.executor = ProcessPoolExecutor()
         self.point_processor = PointProcessor(
@@ -526,11 +546,16 @@ class EEGService:
         )
         self.output_queue: mp.Queue = mp.Queue()
         self.state_manager = StateManager(
-            pipeline_config, self.executor, self.output_queue
+            pipeline_config,
+            self.executor,
+            self.output_queue,
+            state_config_path,
         )
         host = tcp_host if tcp_host is not None else DEFAULT_TCP_HOST
         port = tcp_port if tcp_port is not None else DEFAULT_TCP_PORT
-        retries = tcp_retries if tcp_retries is not None else DEFAULT_TCP_RETRIES
+        retries = (
+            tcp_retries if tcp_retries is not None else DEFAULT_TCP_RETRIES
+        )
         self.tcp_sender = TCPSender(self.output_queue, host, port, retries)
 
     def run(self):

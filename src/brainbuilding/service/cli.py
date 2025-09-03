@@ -6,7 +6,7 @@ import argparse
 import logging
 from typing import Optional
 
-from brainbuilding.config import (
+from brainbuilding.core.config import (
     CHANNELS_IN_STREAM,
     CHANNELS_TO_KEEP,
     DEFAULT_EEG_STREAM_NAME,
@@ -23,8 +23,7 @@ from brainbuilding.config import (
     REFERENCE_CHANNEL,
     EEGProcessingConfig,
 )
-from brainbuilding.pipelines import (
-    PipelineConfig,
+from brainbuilding.train.pipelines import (
     WHITENING,
     BACKGROUND_FILTER,
     AUGMENTED_OAS_COV,
@@ -36,6 +35,8 @@ from joblib import load as joblib_load  # type: ignore
 from joblib import dump as joblib_dump  # type: ignore
 import numpy as np
 import os
+
+from brainbuilding.service.pipeline import PipelineConfig
 
 
 def setup_logging(log_level: str = "INFO", log_file: Optional[str] = None):
@@ -169,6 +170,12 @@ def create_parser() -> argparse.ArgumentParser:
         default=DEFAULT_HISTORY_PATH,
         help="Path to save processing history",
     )
+    file_group.add_argument(
+        "--state-config",
+        type=str,
+        default="state_config_example.yaml",
+        help="Path to YAML state machine configuration",
+    )
 
     # Logging
     logging_group = parser.add_argument_group("Logging")
@@ -285,15 +292,19 @@ def _load_pretrained_components(preload_dir: str) -> dict:
     else:
         csp_json = os.path.join(preload_dir, "csp.json")
         if os.path.exists(csp_json):
-            from brainbuilding.transformers import StructuredCSP
+            from brainbuilding.core.transformers import StructuredCSP
+
             try:
                 import json
+
                 with open(csp_json, "r") as f:
                     state = json.load(f)
                 filters = np.array(state.get("filters", []), dtype=float)
                 patterns = np.array(state.get("patterns", []), dtype=float)
                 n_components = int(state.get("n_components", filters.shape[0]))
-                csp = StructuredCSP(field='sample', nfilter=n_components, log=False)
+                csp = StructuredCSP(
+                    field="sample", nfilter=n_components, log=False
+                )
                 # Restore learned parameters
                 csp.filters_ = filters
                 csp.patterns_ = patterns
@@ -315,16 +326,27 @@ def _create_training_steps():
     and covariance estimation so that the exported components align with
     what the realtime service expects to preload (pt, csp, classifier).
     """
-    return WHITENING + BACKGROUND_FILTER + AUGMENTED_OAS_COV + PT_CSP_LOG + SVC_CLASSIFICATION
+    return (
+        WHITENING
+        + BACKGROUND_FILTER
+        + AUGMENTED_OAS_COV
+        + PT_CSP_LOG
+        + SVC_CLASSIFICATION
+    )
 
 
 def _export_csp_to_json(csp, out_path: str) -> None:
     """Export a fitted CSP to JSON (filters, patterns, n_components)."""
     try:
         import json
+
         state = {
-            "filters": np.asarray(getattr(csp, "filters_", []), dtype=float).tolist(),
-            "patterns": np.asarray(getattr(csp, "patterns_", []), dtype=float).tolist(),
+            "filters": np.asarray(
+                getattr(csp, "filters_", []), dtype=float
+            ).tolist(),
+            "patterns": np.asarray(
+                getattr(csp, "patterns_", []), dtype=float
+            ).tolist(),
             "n_components": int(getattr(csp, "nfilter", 0)),
         }
         with open(out_path, "w") as f:
@@ -333,7 +355,9 @@ def _export_csp_to_json(csp, out_path: str) -> None:
         logging.warning(f"Failed to export CSP to JSON at {out_path}: {e}")
 
 
-def _train_and_save_models(dataset_path: str, output_dir: str, exclude_label: int = 2) -> None:
+def _train_and_save_models(
+    dataset_path: str, output_dir: str, exclude_label: int = 2
+) -> None:
     """Train PT/CSP/SVC from a structured dataset and persist artifacts.
 
     Expected dataset dtype fields: 'sample', 'label', 'subject_id', 'is_background', 'event_id'.
@@ -350,12 +374,16 @@ def _train_and_save_models(dataset_path: str, output_dir: str, exclude_label: in
         mask = y != exclude_label
         X = X[mask]
         y = y[mask]
-        logging.info(f"Excluded label {exclude_label}: remaining samples={len(y)}")
+        logging.info(
+            f"Excluded label {exclude_label}: remaining samples={len(y)}"
+        )
 
     steps = _create_training_steps()
     pipeline = OnlinePipeline(steps)
 
-    logging.info("Fitting training pipeline (whitening → cov → PT → CSP → SVC)...")
+    logging.info(
+        "Fitting training pipeline (whitening → cov → PT → CSP → SVC)..."
+    )
     pipeline.fit(X, y)
 
     # Extract fitted components
@@ -364,7 +392,9 @@ def _train_and_save_models(dataset_path: str, output_dir: str, exclude_label: in
     clf = pipeline.named_steps.get("svc")
 
     if pt is None or csp is None or clf is None:
-        raise RuntimeError("Training pipeline did not produce required components (pt, csp, svc)")
+        raise RuntimeError(
+            "Training pipeline did not produce required components (pt, csp, svc)"
+        )
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -393,14 +423,21 @@ def _load_subject_raw(raw_dir: str, subject_id: int):
     try:
         import pyneurostim as ns
     except Exception as e:
-        raise RuntimeError("pyneurostim and mne are required for raw-data training") from e
+        raise RuntimeError(
+            "pyneurostim and mne are required for raw-data training"
+        ) from e
 
     task_file = os.path.join(raw_dir, str(subject_id), "Task.json")
     xdf_file = os.path.join(raw_dir, str(subject_id), "data.xdf")
     if not (os.path.exists(task_file) and os.path.exists(xdf_file)):
-        raise FileNotFoundError(f"Missing Task.json or data.xdf for subject {subject_id} in {raw_dir}")
+        raise FileNotFoundError(
+            f"Missing Task.json or data.xdf for subject {subject_id} in {raw_dir}"
+        )
 
-    from brainbuilding.config import DEFAULT_EEG_STREAM_NAMES, DEFAULT_EVENT_STREAM_NAME
+    from brainbuilding.core.config import (
+        DEFAULT_EEG_STREAM_NAMES,
+        DEFAULT_EVENT_STREAM_NAME,
+    )
 
     protocol = ns.io.NeuroStim(
         task_file=task_file,
@@ -418,7 +455,7 @@ def _load_subject_raw(raw_dir: str, subject_id: int):
 def _prepare_raw_channels(raw):
     """Adjust channels to standard names used in config (drop dup, rename)."""
     try:
-        raw.drop_channels(["Fp1-1"], on_missing='ignore')  # type: ignore[attr-defined]
+        raw.drop_channels(["Fp1-1"], on_missing="ignore")  # type: ignore[attr-defined]
     except Exception:
         pass
     try:
@@ -431,23 +468,31 @@ def _prepare_raw_channels(raw):
 def _preprocess_continuous_online_like(raw):
     """Apply reference subtraction, scaling, channel selection, and bandpass filtering."""
     import numpy as _np
-    from brainbuilding.config import CHANNELS_IN_STREAM, REF_CHANNEL_IND, CHANNELS_MASK
+    from brainbuilding.core.config import (
+        CHANNELS_IN_STREAM,
+        REF_CHANNEL_IND,
+        CHANNELS_MASK,
+    )
     from brainbuilding.service.signal import OnlineSignalFilter
 
     data = raw.get_data()
-    sfreq = raw.info['sfreq']
+    sfreq = raw.info["sfreq"]
 
     # Map configured stream channel order to indices in raw
-    ch_name_to_idx = {ch: i for i, ch in enumerate(raw.info['ch_names'])}
+    ch_name_to_idx = {ch: i for i, ch in enumerate(raw.info["ch_names"])}
     try:
         indices = _np.array([ch_name_to_idx[ch] for ch in CHANNELS_IN_STREAM])
     except KeyError as e:
         missing = [ch for ch in CHANNELS_IN_STREAM if ch not in ch_name_to_idx]
-        raise RuntimeError(f"Missing required channels in raw: {missing}") from e
+        raise RuntimeError(
+            f"Missing required channels in raw: {missing}"
+        ) from e
 
     stream_data = data[indices]  # shape: (len(CHANNELS_IN_STREAM), n_times)
     # Reference subtract Fz
-    referenced = stream_data - stream_data[REF_CHANNEL_IND:REF_CHANNEL_IND+1]
+    referenced = (
+        stream_data - stream_data[REF_CHANNEL_IND : REF_CHANNEL_IND + 1]
+    )
     # Convert µV to V
     scaled = referenced / 1_000_000
     # Keep required channels
@@ -466,7 +511,7 @@ def _extract_epochs_from_raw(raw, subject_id: int):
     """Create sliding-window epochs and labels from MNE Raw annotations."""
     import numpy as _np
     import mne  # type: ignore
-    from brainbuilding.config import (
+    from brainbuilding.core.config import (
         STANDARD_EVENT_NAME_TO_ID_MAPPING,
         BACKGROUND_CLASS_INDEX,
         IMAGERY_CLASS_INDEX,
@@ -480,7 +525,7 @@ def _extract_epochs_from_raw(raw, subject_id: int):
     for event in events:
         ts_i, _, e = event
         descriptions = [k for k, v in event_ids.items() if v == e]
-        desc = descriptions[0] if descriptions else ''
+        desc = descriptions[0] if descriptions else ""
         label_vec = STANDARD_EVENT_NAME_TO_ID_MAPPING(desc.split("#")[0])
         if label_vec == []:
             continue
@@ -499,7 +544,11 @@ def _extract_epochs_from_raw(raw, subject_id: int):
             continue
         start_idx = ts_idx + sample_delay
         # find next different event
-        next_events = [i for i in events_reprocessed[ind+1:] if tuple(i[2]) != tuple(event_id)]
+        next_events = [
+            i
+            for i in events_reprocessed[ind + 1 :]
+            if tuple(i[2]) != tuple(event_id)
+        ]
         if not next_events:
             continue
         end_idx = next_events[0][0]
@@ -521,25 +570,26 @@ def _extract_epochs_from_raw(raw, subject_id: int):
 
     # Build structured array expected by pipeline
     dtype = [
-        ('sample', _np.float64, X.shape[1:]),
-        ('label', _np.int64),
-        ('subject_id', _np.int64),
-        ('is_background', _np.bool_),
-        ('event_id', _np.uint64),
+        ("sample", _np.float64, X.shape[1:]),
+        ("label", _np.int64),
+        ("subject_id", _np.int64),
+        ("is_background", _np.bool_),
+        ("event_id", _np.uint64),
     ]
     data = _np.zeros(len(X), dtype=dtype)
-    data['sample'] = X
-    data['label'] = y
-    data['subject_id'] = subject_ids_arr
-    data['is_background'] = is_background_arr
+    data["sample"] = X
+    data["label"] = y
+    data["subject_id"] = subject_ids_arr
+    data["is_background"] = is_background_arr
     # simple unique ids
-    data['event_id'] = _np.arange(len(X), dtype=_np.uint64)
+    data["event_id"] = _np.arange(len(X), dtype=_np.uint64)
     return data
 
 
 def _build_dataset_from_raw_dir(raw_dir: str):
     """Load all subject folders under raw_dir and build a single structured array."""
     import numpy as _np
+
     subject_dirs = [d for d in os.listdir(raw_dir) if d.isdigit()]
     subject_ids = sorted([int(s) for s in subject_dirs])
     all_data = []
@@ -556,7 +606,7 @@ def _build_dataset_from_raw_dir(raw_dir: str):
 
     data = _np.concatenate(all_data)
     X = data
-    y = data['label']
+    y = data["label"]
     return X, y
 
 
@@ -570,8 +620,10 @@ def main(argv=None):
         X, y = _build_dataset_from_raw_dir(args.raw_data_dir)
         steps = _create_training_steps()
         pipeline = OnlinePipeline(steps)
-        logging.info("Fitting training pipeline (whitening → cov → PT → CSP → SVC) from raw data...")
-        y_non_background = X['label'][X['is_background'] == 0]
+        logging.info(
+            "Fitting training pipeline (whitening → cov → PT → CSP → SVC) from raw data..."
+        )
+        y_non_background = X["label"][X["is_background"] == 0]
         pipeline.fit(X, y_non_background)
 
         # Extract fitted components and save
@@ -579,7 +631,9 @@ def main(argv=None):
         csp = pipeline.named_steps.get("csp")
         clf = pipeline.named_steps.get("svc")
         if pt is None or csp is None or clf is None:
-            raise RuntimeError("Training pipeline did not produce required components (pt, csp, svc)")
+            raise RuntimeError(
+                "Training pipeline did not produce required components (pt, csp, svc)"
+            )
 
         os.makedirs(args.output_dir, exist_ok=True)
         joblib_dump(pt, os.path.join(args.output_dir, "pt.joblib"))
@@ -598,19 +652,23 @@ def main(argv=None):
 
     # Lazy import to avoid pylsl dependency during training
     from brainbuilding.service.eeg_service import EEGService
+
     pipeline_config = PipelineConfig.hybrid_pipeline()
     service = EEGService(
         pipeline_config,
         tcp_host=config.tcp_host,
         tcp_port=config.tcp_port,
         tcp_retries=config.tcp_retries,
+        state_config_path=getattr(args, "state_config", None),
     )
 
     if not args.no_preload:
         pretrained = _load_pretrained_components(args.preload_dir)
         if pretrained:
             service.state_manager.fitted_components.update(pretrained)
-            service.state_manager.pipeline_ready = service.state_manager._have_all_components()
+            service.state_manager.pipeline_ready = (
+                service.state_manager._have_all_components()
+            )
             logging.info(
                 f"Preloaded components: {list(pretrained.keys())}; pipeline_ready={service.state_manager.pipeline_ready}"
             )
@@ -621,6 +679,7 @@ def main(argv=None):
         pass
     finally:
         service.stop()
+
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,75 @@
+processing_states:
+  IDLE: 0
+  EYE_WARMUP_DESC: 1
+  EYE_WARMUP_BLINK: 2
+  EYE_WARMUP_TEXT: 3
+  EYE_WARMUP_MOVE: 4
+  BACKGROUND: 5
+  INFERENCE: 6
+
+logical_groups:
+  EYE_MOVEMENT: 1
+  BACKGROUND: 2
+  INFERENCE: 3
+
+event_ids:
+  EYE_WARMUP_DESC: 1
+  EYE_WARMUP_BLINK: 2
+  EYE_WARMUP_TEXT: 3
+  EYE_WARMUP_MOVE: 4
+  BACKGROUND: 5
+  TASK_PERIOD: 10
+
+states:
+  IDLE:
+    accepted_events:
+      EYE_WARMUP_DESC: EYE_WARMUP_DESC
+      BACKGROUND: BACKGROUND
+      TASK_PERIOD: INFERENCE
+    on_entry_action_groups:
+      PREDICT: INFERENCE
+    on_exit_action_groups:
+      PREDICT: INFERENCE
+  EYE_WARMUP_DESC:
+    accepted_events:
+      EYE_WARMUP_BLINK: EYE_WARMUP_BLINK
+      BACKGROUND: BACKGROUND
+  EYE_WARMUP_BLINK:
+    accepted_events:
+      EYE_WARMUP_TEXT: EYE_WARMUP_TEXT
+      BACKGROUND: BACKGROUND
+      EYE_WARMUP_BLINK: EYE_WARMUP_BLINK
+    data_collection_group: EYE_MOVEMENT
+  EYE_WARMUP_TEXT:
+    accepted_events:
+      EYE_WARMUP_MOVE: EYE_WARMUP_MOVE
+      BACKGROUND: BACKGROUND
+  EYE_WARMUP_MOVE:
+    accepted_events:
+      EYE_WARMUP_BLINK: EYE_WARMUP_BLINK
+      EYE_WARMUP_TEXT: EYE_WARMUP_TEXT
+      BACKGROUND: BACKGROUND
+    data_collection_group: EYE_MOVEMENT
+    on_transition_actions:
+      BACKGROUND: [FIT]
+    on_transition_action_groups:
+      BACKGROUND:
+        FIT: BACKGROUND
+  BACKGROUND:
+    accepted_events:
+      TASK_PERIOD: INFERENCE
+    data_collection_group: BACKGROUND
+    on_exit_actions: [FIT]
+  INFERENCE:
+    accepted_events:
+      EYE_WARMUP_DESC: EYE_WARMUP_DESC
+      BACKGROUND: BACKGROUND
+    data_collection_group: INFERENCE
+    on_entry_actions: [PREDICT, PARTIAL_FIT]
+    on_exit_actions: [PREDICT, PARTIAL_FIT]
+    on_entry_action_groups:
+      PREDICT: INFERENCE
+      PARTIAL_FIT: INFERENCE
+    on_exit_action_groups:
+      PREDICT: INFERENCE
+      PARTIAL_FIT: INFERENCE
