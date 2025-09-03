@@ -24,20 +24,29 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Medical Science Apps.",
 ]
 
+# Minimal runtime deps for realtime EEG service
 dependencies = [
     "numpy>=2.1.3",
-    "pandas>=2.2.3",
     "scipy>=1.12.0",
     "scikit-learn>=1.4.0",
-    "mne>=1.8.0",
     "pyriemann>=0.7",
+    "pylsl==1.16.2",
+    "pydantic>=2.0.0",
+    "PyYAML>=6.0.1",
+    "joblib>=1.3.0",
+]
+
+[project.optional-dependencies]
+# Training-only extras (not needed for realtime service)
+train = [
+    "mne>=1.8.0",
+    "pyneurostim @ git+https://github.com/VladimirR46/pyneurostim.git@b022759f96466304ad600c0f48fb5397bd6fcd17",
+    "pandas>=2.2.3",
     "matplotlib>=3.9.2",
+    "seaborn>=0.13.0",
     "tqdm>=4.66.0",
     "h5py>=3.10.0",
-    "seaborn>=0.13.0",
-    "pyaml>=24.9.0",
-    "pyneurostim @ git+https://github.com/VladimirR46/pyneurostim.git@b022759f96466304ad600c0f48fb5397bd6fcd17",
-    "pylsl==1.16.2",
+    "pyxdf>=1.16.5",
 ]
 
 [tool.setuptools]
@@ -48,7 +57,11 @@ packages = ["brainbuilding"]
 brainbuilding-realtime = "brainbuilding.service.cli:main"
 
 [tool.ruff]
-line-length = 80
+line-length = 79
+extend-exclude = [
+    "build",
+    "data",
+]
 
 [tool.ruff.format]
 quote-style = "double"

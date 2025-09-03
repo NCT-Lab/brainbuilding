@@ -9,7 +9,7 @@ from sklearn.svm import SVC
 
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Type
+from typing import Any, Dict, List, Type, Optional
 
 
 @dataclass
@@ -20,7 +20,7 @@ class PipelineStep:
     init_params: Optional[Dict[str, Any]] = None
     requires_fit: bool = True
 
-    def wrap_component(self, component) -> PipelineStepBase:
+    def wrap_component(self, component) -> "PipelineStepBase":
         """Wrap transformer or classifier with unified interface"""
         if self.is_classifier:
             return ClassifierWrapper(component)
