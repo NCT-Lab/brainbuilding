@@ -1,11 +1,11 @@
 processing_states:
-  IDLE: 0
-  EYE_WARMUP_DESC: 1
-  EYE_WARMUP_BLINK: 2
-  EYE_WARMUP_TEXT: 3
-  EYE_WARMUP_MOVE: 4
-  BACKGROUND: 5
-  INFERENCE: 6
+  Idle: 0
+  EyeWarmupDesc: 1
+  EyeWarmupBlink: 2
+  EyeWarmupText: 3
+  EyeWarmupMove: 4
+  Background: 5
+  Inference: 6
 
 logical_groups:
   EYE_MOVEMENT: 1
@@ -21,49 +21,45 @@ event_ids:
   TASK_PERIOD: 10
 
 states:
-  IDLE:
+  Idle:
     accepted_events:
-      EYE_WARMUP_DESC: EYE_WARMUP_DESC
-      BACKGROUND: BACKGROUND
-      TASK_PERIOD: INFERENCE
-    on_entry_action_groups:
-      PREDICT: INFERENCE
-    on_exit_action_groups:
-      PREDICT: INFERENCE
-  EYE_WARMUP_DESC:
+      EYE_WARMUP_DESC: EyeWarmupDesc
+      BACKGROUND: Background
+      TASK_PERIOD: Inference
+  EyeWarmupDesc:
     accepted_events:
-      EYE_WARMUP_BLINK: EYE_WARMUP_BLINK
-      BACKGROUND: BACKGROUND
-  EYE_WARMUP_BLINK:
+      EYE_WARMUP_BLINK: EyeWarmupBlink
+      BACKGROUND: Background
+  EyeWarmupBlink:
     accepted_events:
-      EYE_WARMUP_TEXT: EYE_WARMUP_TEXT
-      BACKGROUND: BACKGROUND
-      EYE_WARMUP_BLINK: EYE_WARMUP_BLINK
+      EYE_WARMUP_TEXT: EyeWarmupText
+      BACKGROUND: Background
+      EYE_WARMUP_BLINK: EyeWarmupBlink
     data_collection_group: EYE_MOVEMENT
-  EYE_WARMUP_TEXT:
+  EyeWarmupText:
     accepted_events:
-      EYE_WARMUP_MOVE: EYE_WARMUP_MOVE
-      BACKGROUND: BACKGROUND
-  EYE_WARMUP_MOVE:
+      EYE_WARMUP_MOVE: EyeWarmupMove
+      BACKGROUND: Background
+  EyeWarmupMove:
     accepted_events:
-      EYE_WARMUP_BLINK: EYE_WARMUP_BLINK
-      EYE_WARMUP_TEXT: EYE_WARMUP_TEXT
-      BACKGROUND: BACKGROUND
+      EYE_WARMUP_BLINK: EyeWarmupBlink
+      EYE_WARMUP_TEXT: EyeWarmupText
+      BACKGROUND: Background
     data_collection_group: EYE_MOVEMENT
     on_transition_actions:
-      BACKGROUND: [FIT]
+      Background: [FIT]
     on_transition_action_groups:
-      BACKGROUND:
-        FIT: BACKGROUND
-  BACKGROUND:
+      Background:
+        FIT: EYE_MOVEMENT
+  Background:
     accepted_events:
-      TASK_PERIOD: INFERENCE
+      TASK_PERIOD: Inference
     data_collection_group: BACKGROUND
     on_exit_actions: [FIT]
-  INFERENCE:
+  Inference:
     accepted_events:
-      EYE_WARMUP_DESC: EYE_WARMUP_DESC
-      BACKGROUND: BACKGROUND
+      EYE_WARMUP_DESC: EyeWarmupDesc
+      BACKGROUND: Background
     data_collection_group: INFERENCE
     on_entry_actions: [PREDICT, PARTIAL_FIT]
     on_exit_actions: [PREDICT, PARTIAL_FIT]
