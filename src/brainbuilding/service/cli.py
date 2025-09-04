@@ -12,7 +12,6 @@ from brainbuilding.core.config import (
     DEFAULT_EEG_STREAM_NAME,
     DEFAULT_EVENT_STREAM_NAME,
     DEFAULT_HISTORY_PATH,
-    DEFAULT_PIPELINE_PATH,
     DEFAULT_PROCESSING_STEP,
     DEFAULT_PROCESSING_WINDOW_SIZE,
     DEFAULT_SCALE_FACTOR,
@@ -36,7 +35,7 @@ from joblib import dump as joblib_dump  # type: ignore
 import numpy as np
 import os
 
-from brainbuilding.service.pipeline import PipelineConfig
+from brainbuilding.service.pipeline import load_pipeline_from_yaml
 
 
 def setup_logging(log_level: str = "INFO", log_file: Optional[str] = None):
@@ -159,10 +158,10 @@ def create_parser() -> argparse.ArgumentParser:
     # File paths
     file_group = parser.add_argument_group("File Paths")
     file_group.add_argument(
-        "--pipeline-path",
+        "--pipeline-config",
         type=str,
-        default=DEFAULT_PIPELINE_PATH,
-        help="Path to the trained pipeline pickle file",
+        default="configs/pipeline_config.yaml",
+        help="Path to YAML pipeline configuration",
     )
     file_group.add_argument(
         "--history-path",
@@ -256,7 +255,7 @@ def args_to_config(args: argparse.Namespace) -> EEGProcessingConfig:
         tcp_port=args.tcp_port,
         tcp_retries=args.tcp_retries,
         # File paths
-        pipeline_path=args.pipeline_path,
+        pipeline_path=args.pipeline_config,
         history_path=args.history_path,
         # Misc
         scale_factor=args.scale_factor,
@@ -663,7 +662,7 @@ def main(argv=None):
     # Lazy import to avoid pylsl dependency during training
     from brainbuilding.service.eeg_service import EEGService
 
-    pipeline_config = PipelineConfig.hybrid_pipeline()
+    pipeline_config, pretrained = load_pipeline_from_yaml(args.pipeline_config)
     service = EEGService(
         pipeline_config,
         tcp_host=config.tcp_host,
@@ -672,16 +671,14 @@ def main(argv=None):
         state_config_path=getattr(args, "state_config", None),
     )
 
-    if not args.no_preload:
-        pretrained = _load_pretrained_components(args.preload_dir)
-        if pretrained:
-            service.state_manager.fitted_components.update(pretrained)
-            service.state_manager.pipeline_ready = (
-                service.state_manager._have_all_components()
-            )
-            logging.info(
-                f"Preloaded components: {list(pretrained.keys())}; pipeline_ready={service.state_manager.pipeline_ready}"
-            )
+    if pretrained:
+        service.state_manager.fitted_components.update(pretrained)
+        service.state_manager.pipeline_ready = (
+            service.state_manager._have_all_components()
+        )
+        logging.info(
+            f"Preloaded components (from YAML): {list(pretrained.keys())}; pipeline_ready={service.state_manager.pipeline_ready}"
+        )
 
     try:
         service.run()

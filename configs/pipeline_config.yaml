@@ -1,0 +1,76 @@
+steps:
+  - name: ica
+    component: EyeRemoval
+    requires_fit: true
+    is_classifier: false
+    init_params:
+      n_components: null
+      remove_veog: true
+      remove_heog: true
+      random_state: 42
+
+  - name: whitening
+    component: SimpleWhiteningTransformer
+    requires_fit: true
+    is_classifier: false
+    init_params:
+      n_channels: 18
+
+  - name: augmentation
+    component: AugmentedDataset
+    requires_fit: false
+    is_classifier: false
+    init_params:
+      order: 4
+      lag: 8
+
+  - name: covariance
+    component: Covariances
+    requires_fit: false
+    is_classifier: false
+    init_params:
+      estimator: oas
+
+  - name: to_structured
+    component: StructuredArrayBuilder
+    requires_fit: false
+    is_classifier: false
+    init_params:
+      subject_id: 0
+      sample_field: sample
+
+  - name: pt
+    component: ParallelTransportTransformer
+    requires_fit: true
+    is_classifier: false
+    init_params:
+      include_means: false
+      prevent_subject_drift: true
+      subject_min_samples_for_transform: 5
+
+  - name: from_structured
+    component: StructuredToArray
+    requires_fit: false
+    is_classifier: false
+    init_params:
+      field: sample
+
+  - name: csp
+    component: CSP
+    requires_fit: true
+    is_classifier: false
+    init_params:
+      nfilter: 10
+      log: false
+      metric: riemann
+
+  - name: classifier
+    component: SVC
+    requires_fit: true
+    is_classifier: true
+    init_params:
+      kernel: rbf
+      C: 0.696
+      gamma: 0.035
+      class_weight: null
+      probability: true

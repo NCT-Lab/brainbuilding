@@ -128,8 +128,6 @@ DEFAULT_TCP_HOST = "192.168.1.97"
 DEFAULT_TCP_PORT = 8080
 DEFAULT_TCP_RETRIES = 500
 
-# File paths
-DEFAULT_PIPELINE_PATH = "trained_pipeline.pickle"
 DEFAULT_HISTORY_PATH = "eeg_history.pickle"
 
 # Debug settings
@@ -154,6 +152,7 @@ class Event(IntEnum):
         return event in [cls.BLINK, cls.TRACK_DOT, cls.RANDOM_DOT]
 
 
+# TODO: break this class fields into multiple config classes
 @dataclass
 class EEGProcessingConfig:
     """Configuration for EEG processing"""
@@ -188,7 +187,7 @@ class EEGProcessingConfig:
     tcp_retries: int = DEFAULT_TCP_RETRIES
 
     # File paths
-    pipeline_path: str = DEFAULT_PIPELINE_PATH
+    pipeline_path: str = ""
     history_path: str = DEFAULT_HISTORY_PATH
 
     # Misc

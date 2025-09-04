@@ -1,6 +1,14 @@
 from sklearn.base import ClassifierMixin
 from brainbuilding.core.config import CHANNELS_TO_KEEP
-from brainbuilding.core.transformers import AugmentedDataset, Covariances, EyeRemoval, ParallelTransportTransformer, SimpleWhiteningTransformer, StructuredArrayBuilder, StructuredToArray
+from brainbuilding.core.transformers import (
+    AugmentedDataset,
+    Covariances,
+    EyeRemoval,
+    ParallelTransportTransformer,
+    SimpleWhiteningTransformer,
+    StructuredArrayBuilder,
+    StructuredToArray,
+)
 
 
 import numpy as np
@@ -9,7 +17,9 @@ from sklearn.svm import SVC
 
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Type, Optional
+from typing import Any, Dict, List, Type, Optional, Tuple
+import yaml  # type: ignore
+from pydantic import BaseModel, Field  # type: ignore
 
 
 @dataclass
@@ -97,87 +107,76 @@ class PipelineConfig:
 
         return newly_fitted
 
-    @classmethod
-    def hybrid_pipeline(cls):
-        return cls(
-            steps=[
-                PipelineStep(
-                    name="ica",
-                    component_class=EyeRemoval,
-                    init_params={
-                        "n_components": None,
-                        "remove_veog": True,
-                        "remove_heog": True,
-                        "random_state": 42,
-                    },
-                    requires_fit=True,
-                ),
-                PipelineStep(
-                    name="whitening",
-                    component_class=SimpleWhiteningTransformer,
-                    init_params={"n_channels": len(CHANNELS_TO_KEEP)},
-                    requires_fit=True,
-                ),
-                PipelineStep(
-                    name="augmentation",
-                    component_class=AugmentedDataset,
-                    init_params={"order": 4, "lag": 8},
-                    requires_fit=False,
-                ),
-                PipelineStep(
-                    name="covariance",
-                    component_class=Covariances,
-                    is_classifier=False,
-                    init_params={"estimator": "oas"},
-                    requires_fit=False,
-                ),
-                PipelineStep(
-                    name="to_structured",
-                    component_class=StructuredArrayBuilder,
-                    init_params={"subject_id": 0, "sample_field": "sample"},
-                    requires_fit=False,
-                ),
-                PipelineStep(
-                    name="pt",
-                    component_class=ParallelTransportTransformer,
-                    init_params={
-                        "include_means": False,
-                        "prevent_subject_drift": True,
-                        "subject_min_samples_for_transform": 5,
-                    },
-                    requires_fit=True,
-                ),
-                PipelineStep(
-                    name="from_structured",
-                    component_class=StructuredToArray,
-                    init_params={"field": "sample"},
-                    requires_fit=False,
-                ),
-                PipelineStep(
-                    name="csp",
-                    component_class=CSP,
-                    init_params={
-                        "nfilter": 10,
-                        "log": False,
-                        "metric": "riemann",
-                    },
-                    requires_fit=True,
-                ),
-                PipelineStep(
-                    name="classifier",
-                    component_class=SVC,
-                    is_classifier=True,
-                    init_params={
-                        "kernel": "rbf",
-                        "C": 0.696,
-                        "gamma": 0.035,
-                        "class_weight": None,
-                        "probability": True,
-                    },
-                    requires_fit=True,
-                ),
-            ]
+# -----------------------------
+# YAML-driven pipeline loading
+# -----------------------------
+
+class PipelineStepConfigModel(BaseModel):
+    name: str
+    component: str
+    is_classifier: bool = False
+    requires_fit: bool = True
+    init_params: Dict[str, Any] = Field(default_factory=dict)
+    pretrained_path: Optional[str] = None
+
+
+class PipelineYAMLConfigModel(BaseModel):
+    steps: List[PipelineStepConfigModel] = Field(default_factory=list)
+
+
+def _component_registry() -> Dict[str, Type]:
+    """Return a strict registry of available pipeline component classes.
+
+    This avoids dynamic getattr/imports per workspace rules. Extend explicitly.
+    """
+    return {
+        # Preprocessing and transformation
+        "EyeRemoval": EyeRemoval,
+        "SimpleWhiteningTransformer": SimpleWhiteningTransformer,
+        "AugmentedDataset": AugmentedDataset,
+        "Covariances": Covariances,
+        "StructuredArrayBuilder": StructuredArrayBuilder,
+        "ParallelTransportTransformer": ParallelTransportTransformer,
+        "StructuredToArray": StructuredToArray,
+        # Feature extraction / models
+        "CSP": CSP,
+        "SVC": SVC,
+    }
+
+
+def _resolve_component_class(name: str) -> Type:
+    registry = _component_registry()
+    if name not in registry:
+        raise ValueError(f"Unknown component class in pipeline config: {name}")
+    return registry[name]
+
+
+def load_pipeline_from_yaml(path: str) -> Tuple[PipelineConfig, Dict[str, Any]]:
+    """Load a PipelineConfig and initial fitted components from a YAML file.
+
+    Returns (pipeline_config, pretrained_components).
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f)
+    if not isinstance(raw, dict):
+        raise ValueError("Invalid pipeline YAML: expected a mapping at top level")
+    cfg = PipelineYAMLConfigModel(**raw)
+
+    steps: List[PipelineStep] = []
+    pretrained: Dict[str, Any] = {}
+
+    for s in cfg.steps:
+        component_cls = _resolve_component_class(s.component)
+        step = PipelineStep(
+            name=s.name,
+            component_class=component_cls,
+            is_classifier=s.is_classifier,
+            init_params=s.init_params or {},
+            requires_fit=s.requires_fit,
         )
+        steps.append(step)
+
+    return PipelineConfig(steps=steps), pretrained
 
 
 class PipelineStepBase:
