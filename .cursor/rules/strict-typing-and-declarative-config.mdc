@@ -1,0 +1,42 @@
+---
+alwaysApply: true
+---
+# Strict typing and declarative configuration
+
+Adopt fail-fast, strictly typed, declarative patterns across the codebase. Avoid hardcoded logic and dynamic lookups in critical paths.
+
+- **Prefer declarative configs**: Represent runtime behavior in YAML/TOML with a typed schema. Map configuration directly into typed structures rather than hardcoding values in code.
+  - Use Pydantic models or Python `@dataclass` schemas with explicit field types for config.
+  - Validate all names and references during load/build, not at runtime.
+  - Example references: [src/brainbuilding/service/state_config.py](mdc:src/brainbuilding/service/state_config.py), [configs/state_config.yaml](mdc:configs/state_config.yaml), [src/brainbuilding/service/pipeline.py](mdc:src/brainbuilding/service/pipeline.py), [configs/pipeline_config.yaml](mdc:configs/pipeline_config.yaml)
+
+- **Strict typing**:
+  - Do not widen to `Any` in public APIs. Annotate functions and attributes precisely.
+  - Use `IntEnum` for dynamic enums loaded from config; store both the enum types and the current enum members in typed fields.
+  - Prefer `TypedDict`/dataclasses/Pydantic to untyped dicts.
+
+- **No dynamic attribute access for critical logic**:
+  - Do not use `getattr` to resolve enums, actions, or config fields. Access members directly after validation.
+  - If an attribute can be absent, validate early and raise a precise error.
+
+- **Fail fast config validation**:
+  - Validate presence/shape of all required fields during load.
+  - If a referenced state/event/group/step is missing, raise `ValueError`/`RuntimeError` while loading.
+  - Resolve priorities explicitly (e.g., per-transition override → per-state override → defaults) using clear dict access.
+
+- **Avoid ad-hoc serialization of ML artifacts**:
+  - Do not rely on pickle/joblib or custom JSON for cross-platform artifacts.
+  - Prefer online fitting or define an explicit, versioned serialization interface when unavoidable.
+  - The realtime pipeline should not load pickled/JSON models implicitly. Any persisted format must be strictly validated and versioned.
+
+- **Logging & errors**:
+  - Use lazy formatting in logging (e.g., `LOG.info("msg %s", x)`).
+  - Keep try/except narrow and specific; avoid catching base exceptions. Re-raise with context when needed.
+
+- **Examples**
+  - Good: Load YAML → typed schema → validate → use direct enum/member access.
+  - Bad: Manually navigating dicts with default fallbacks; dynamic `getattr` member resolution; hardcoded constants sprinkled through logic.
+
+- **Application points**
+  - State machine: [src/brainbuilding/service/state_config.py](mdc:src/brainbuilding/service/state_config.py) builds typed runtime enums and state definitions.
+  - Pipeline: [src/brainbuilding/service/pipeline.py](mdc:src/brainbuilding/service/pipeline.py) should deserialize YAML into a typed schema and avoid manual dict traversal wherever possible.
