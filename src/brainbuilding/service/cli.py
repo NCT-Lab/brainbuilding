@@ -280,14 +280,19 @@ def _load_pretrained_components(preload_dir: str) -> dict:
         if os.path.exists(path):
             try:
                 components["pt"] = joblib_load(path)
-            except Exception:
-                pass
+                logging.info(f"Loaded PT from {path}")
+            except (ValueError, EOFError, ImportError, AttributeError) as e:
+                logging.warning(f"Failed to load PT from {path}: {e}")
             break
 
     for fname in ("csp.pkl", "csp.joblib"):
         path = os.path.join(preload_dir, fname)
         if os.path.exists(path):
-            components["csp"] = joblib_load(path)
+            try:
+                components["csp"] = joblib_load(path)
+                logging.info(f"Loaded CSP from {path}")
+            except (ValueError, EOFError, ImportError, AttributeError) as e:
+                logging.warning(f"Failed to load CSP from {path}: {e}")
             break
     else:
         csp_json = os.path.join(preload_dir, "csp.json")
@@ -309,12 +314,17 @@ def _load_pretrained_components(preload_dir: str) -> dict:
                 csp.filters_ = filters
                 csp.patterns_ = patterns
                 components["csp"] = csp
-            except Exception:
-                pass
+                logging.info(f"Loaded CSP from {csp_json} (JSON)")
+            except (OSError, ValueError) as e:
+                logging.warning(f"Failed to load CSP from JSON {csp_json}: {e}")
 
     clf_path = os.path.join(preload_dir, "classifier.joblib")
     if os.path.exists(clf_path):
-        components["classifier"] = joblib_load(clf_path)
+        try:
+            components["classifier"] = joblib_load(clf_path)
+            logging.info(f"Loaded classifier from {clf_path}")
+        except (ValueError, EOFError, ImportError, AttributeError) as e:
+            logging.warning(f"Failed to load classifier from {clf_path}: {e}")
 
     return components
 

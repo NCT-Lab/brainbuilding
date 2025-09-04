@@ -1,5 +1,6 @@
 import multiprocessing as mp
 import time
+import logging
 from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import dataclass, asdict
 from typing import Any, Callable, Dict, List, Optional, Type
@@ -22,6 +23,11 @@ from brainbuilding.service.state_config import (
     load_state_machine_from_yaml,
     StateMachineRuntime,
 )
+
+LOG = logging.getLogger("brainbuilding.service")
+LOG_INFER = logging.getLogger("brainbuilding.service.inference")
+LOG_STATE = logging.getLogger("brainbuilding.service.state")
+LOG_STREAM = logging.getLogger("brainbuilding.service.stream")
 
 
 """StateDefinition is imported from state_types and used directly."""
@@ -107,6 +113,8 @@ CHANNELS_MASK = np.array(
     [True if ch in CHANNELS_TO_KEEP else False for ch in CHANNELS_IN_STREAM]
 )
 
+TRIGGER_CODE_INDEX = 1
+
 
 def process_window_in_pool(
     window_data: np.ndarray,
@@ -141,8 +149,11 @@ def process_window_in_pool(
                 if (hasattr(data, "__len__") and len(data) > 1)
                 else 1.0
             )
-        print(
-            f"Prediction: {prediction}, Probability: {probability}, Processing Time: {processing_time}"
+        LOG_INFER.info(
+            "Prediction=%s Prob=%.3f Time=%.3fs",
+            prediction,
+            probability,
+            processing_time,
         )
         return ClassificationResult(
             prediction=prediction,
@@ -153,11 +164,11 @@ def process_window_in_pool(
         )
     except KeyError as e:
         processing_time = time.time() - start_time
-        print(f"Inference failed: missing component {e}")
+        LOG_INFER.warning("Inference failed: missing component %s", e)
         return None
     except ValueError as e:
         processing_time = time.time() - start_time
-        print(f"Inference failed: {e}")
+        LOG_INFER.warning("Inference failed: %s", e)
         return None
 
 
@@ -277,8 +288,10 @@ class StateManager:
                 next_state = current_state_def.accepted_events[event]
                 self._transition_to(next_state)
             else:
-                print(
-                    f"Event '{event}' not accepted in state {self.current_state.name}"
+                LOG_STATE.debug(
+                    "Event %s not accepted in state %s",
+                    event,
+                    self.current_state.name,
                 )
 
     def _transition_to(self, next_state):
@@ -307,7 +320,7 @@ class StateManager:
             trigger="entry",
         )
 
-        print(f"State transition: {old_state.name} -> {next_state.name}")
+        LOG_STATE.info("Transition %s -> %s", old_state.name, next_state.name)
 
     def _resolve_action_group(
         self,
@@ -381,7 +394,7 @@ class StateManager:
                 ):
                     self.fitted_components.update(result)
                     self.pipeline_ready = self._have_all_components()
-                    print(f"Async operation {op_id} completed successfully")
+                    LOG_STATE.info("Async op %s completed successfully", op_id)
                 completed_ops.append(op_id)
 
         for op_id in completed_ops:
@@ -399,7 +412,19 @@ class StateManager:
 
     def _handle_fit(self, data_group):
         if not self.grouped_samples[data_group]:
-            print(f"No data available for fitting from {data_group.name}")
+            LOG_STATE.error(
+                "No data available for fitting from %s", data_group.name
+            )
+            return
+
+        # Guard: require at least one full window
+        if len(self.grouped_samples[data_group]) < self.window_size:
+            LOG_STATE.debug(
+                "Insufficient samples for fitting from %s: %d < %d",
+                data_group.name,
+                len(self.grouped_samples[data_group]),
+                self.window_size,
+            )
             return
 
         group_data = np.array(self.grouped_samples[data_group]).T[
@@ -414,9 +439,11 @@ class StateManager:
             self.fitted_components,
         )
         self.pending_operations[op_id] = future
-        print(
-            f"Submitted async fit operation {op_id} with"
-            f"{len(group_data)} samples from {data_group.name}"
+        LOG_STATE.info(
+            "Submitted async fit %s with %d samples from %s",
+            op_id,
+            len(group_data),
+            data_group.name,
         )
 
     def _handle_partial_fit(self, data_group):
@@ -424,41 +451,43 @@ class StateManager:
         if self.partial_fit_active:
             self.partial_fit_active = False
             self._partial_fit_group = None
-            print(f"Disabled periodic partial-fit mode for {data_group.name}")
+            LOG_STATE.info("Disabled partial-fit for %s", data_group.name)
             return
         self.partial_fit_active = True
         self._partial_fit_group = data_group
         if data_group not in self.partial_fit_last_index:
             self.partial_fit_last_index[data_group] = 0
-        print(
-            f"Enabled periodic partial-fit mode for "
-            f"{data_group.name} with {self.partial_fit_window_size=}"
+        LOG_STATE.info(
+            "Enabled partial-fit for %s window_size=%d",
+            data_group.name,
+            self.partial_fit_window_size,
         )
 
     def _handle_predict(self, data_group: Optional[IntEnum]):
         # Toggle inference mode
         self.inference_active = not self.inference_active
-        print(
-            "Real-time inference mode "
-            + ("enabled" if self.inference_active else "disabled")
+        LOG_STATE.info(
+            "Inference %s",
+            "enabled" if self.inference_active else "disabled",
         )
 
     def _handle_prediction_result(self, future: Future):
         """Callback for completed prediction futures."""
         result = future.result()
         if result is None:
-            print(
-                "Inference skipped for this window"
-                "(incomplete pipeline or invalid data)"
+            LOG_STATE.debug(
+                "Inference skipped for this window (incomplete pipeline or invalid data)"
             )
             return
         if self.queue:
             self.queue.put(asdict(result))
 
-        print(
-            f"Window {result.window_metadata.window_id}: prediction={result.prediction}, "
-            f"probability={result.probability:.3f}, "
-            f"time={result.processing_time:.3f}s"
+        LOG_STATE.info(
+            "Window %s: pred=%s prob=%.3f time=%.3fs",
+            result.window_metadata.window_id,
+            result.prediction,
+            result.probability,
+            result.processing_time,
         )
 
     def _maybe_process_latest_window(self):
@@ -521,8 +550,10 @@ class StateManager:
                 self.fitted_components,
             )
             self.pending_operations[op_id] = future
-            print(
-                f"Submitted async partial-fit {op_id} using non-overlapping window starting at index {start_index}"
+            LOG_STATE.info(
+                "Submitted partial-fit %s starting at index %d",
+                op_id,
+                start_index,
             )
 
             start_index += self.partial_fit_window_size
@@ -565,7 +596,7 @@ class EEGService:
             try:
                 events = self.stream_manager.pull_events()
                 if events:
-                    self.state_manager.handle_events([e[0] for e in events])
+                    self.state_manager.handle_events([e[TRIGGER_CODE_INDEX] for e in events])
                 samples, timestamps = self.stream_manager.pull_samples()
                 if samples:
                     self.state_manager.add_new_samples(
@@ -578,8 +609,8 @@ class EEGService:
 
     def stop(self):
         """Clean shutdown of all components"""
-        print("Stopping EEG service...")
+        LOG.info("Stopping EEG service...")
         self.state_manager.inference_active = False
         self.tcp_sender.stop()
         self.executor.shutdown(wait=True)
-        print("EEG service stopped")
+        LOG.info("EEG service stopped")
