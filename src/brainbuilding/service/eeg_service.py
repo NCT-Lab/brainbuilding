@@ -174,14 +174,26 @@ def process_window_in_pool(
 
 class StreamManager:
     def __init__(self):
-        self.eeg_streams = resolve_stream("name", "NeoRec21-1247")
-        self.event_streams = resolve_stream("name", "Brainbuilding-Events")
+        self.eeg_streams = resolve_stream("type", "EEG")
+        self.event_streams = resolve_stream("type", "Events")
 
         if not self.eeg_streams or not self.event_streams:
             raise RuntimeError("Could not find required streams")
 
-        self.eeg_inlet = StreamInlet(self.eeg_streams[0])
-        self.event_inlet = StreamInlet(self.event_streams[0])
+        eeg_info = self.eeg_streams[0]
+        event_info = self.event_streams[0]
+        self.eeg_inlet = StreamInlet(eeg_info)
+        self.event_inlet = StreamInlet(event_info)
+        LOG_STREAM.info(
+            "Selected EEG stream: name=%s type=%s",
+            eeg_info.name(),
+            eeg_info.type(),
+        )
+        LOG_STREAM.info(
+            "Selected Events stream: name=%s type=%s",
+            event_info.name(),
+            event_info.type(),
+        )
 
     def pull_events(self):
         events, _ = self.event_inlet.pull_chunk(timeout=0)
@@ -237,8 +249,10 @@ class StateManager:
         self.pending_operations: Dict[str, Future] = {}
         self.pipeline_ready = False
 
+        # TODO: hardcode? why?
         self.window_size = 250
         self.step_size = 125
+
         self.inference_active = False
         self.last_processed_index = 0
         self.window_id = 0

@@ -92,8 +92,7 @@ class MockLSLSender:
 
             if stream_name == "Brainbuilding-Events":
                 print(f"Event {self.get_sample_type(sample_id)} from {stream_name} at {timestamp:.3f}")
-                print(sample)
-                sample = [event_map[self.get_sample_type(sample_id)], 0]
+                sample = [0, event_map[self.get_sample_type(sample_id)]]
             else:
                 pass
             outlet.push_sample(sample, timestamp)
