@@ -1,0 +1,31 @@
+---
+alwaysApply: true
+---
+# Project-wide principles: strict typing, declarative configs, zero hardcode
+
+Adopt fail-fast, strictly typed, declarative patterns across any codebase. Avoid ad‑hoc flags, dynamic reflection, and hidden defaults.
+
+- Declarative configuration
+  - Represent behavior in configuration (YAML/TOML/JSON/etc.) with a typed schema (Pydantic/dataclasses/typed structs).
+  - Validate names and references during config load; fail fast on unknown components/states/groups.
+  - Map config → runtime structures with small, pure mappers; avoid imperative builders.
+
+
+- Strict typing and contracts
+  - Prefer precise types (enums, TypedDict/dataclasses) over `Any`.
+  - Validate presence/shape up front; avoid nullable/dynamic lookups in critical paths.
+  - Keep public interfaces small, predictable, and documented.
+
+- Unified action handling
+  - When multiple actions share semantics (e.g., windowed/periodic tasks), use one data‑driven mechanism (maps keyed by an enum/identifier) with a single dispatcher/iterator.
+  - Do not duplicate flags/branches per action; parameterize behavior instead.
+
+- Error handling & logging
+  - Use lazy logging formatting (e.g., `LOG.info("msg %s", x)`).
+  - Catch specific exceptions only; avoid broad catches; re‑raise with context when appropriate.
+  - Keep lines within linter limits; keep messages concise and informative.
+
+- Tooling & determinism
+  - Prefer deterministic tooling and non‑interactive flags for CLI tasks.
+  - Keep formatting and linting clean; integrate into the workflow.
+  - Favor reproducible builds/tests; avoid global singletons and implicit state.
