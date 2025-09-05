@@ -10,6 +10,7 @@ class TransitionAction(IntEnum):
     FIT = 1
     PARTIAL_FIT = 2
     PREDICT = 3
+    COLLECT_FOR_TRAIN = 4
 
 
 @dataclass

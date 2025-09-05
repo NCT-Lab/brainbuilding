@@ -38,6 +38,8 @@ class WindowMetadata:
     start_timestamp: float
     end_timestamp: float
     window_id: Optional[str] = None
+    session_id: Optional[str] = None
+    state_visit_id: Optional[int] = None
 
 
 @dataclass
@@ -46,6 +48,7 @@ class ProcessedWindow:
     timestamps: List[float]
     metadata: WindowMetadata
     features: Optional[np.ndarray] = None
+    class_label: Optional[int] = None
 
 
 @dataclass
@@ -211,7 +214,7 @@ class PointProcessor:
     def process(self, sample: np.ndarray) -> np.ndarray:
         """Process a single raw sample"""
         sample = np.array(sample).reshape(1, -1)
-        referenced = sample - sample[:, REF_CHANNEL_IND : REF_CHANNEL_IND + 1]
+        referenced = sample - sample[:, REF_CHANNEL_IND:REF_CHANNEL_IND + 1]
         scaled = referenced / 1_000_000
         selected = scaled[:, CHANNELS_MASK]
         filtered = self.signal_filter.process_sample(selected)
@@ -228,13 +231,29 @@ class StateManager:
     logical_group: Type[IntEnum]
     states: Dict[IntEnum, StateDefinition]
     current_state: IntEnum
+    window_action_active: Dict[TransitionAction, bool]
+    window_action_group: Dict[TransitionAction, Optional[IntEnum]]
+    window_action_last_index: Dict[TransitionAction, Dict[IntEnum, int]]
+    window_action_window_size: int
+    window_action_step_size: Dict[TransitionAction, int]
+    window_action_executor: Dict[TransitionAction, Callable[[], None]]
+    window_action_callbacks: Dict[
+        TransitionAction,
+        Callable[[IntEnum], Callable[[np.ndarray, List[float]], None]],
+    ]
+    action_handlers: Dict[TransitionAction, Callable]
+    
+    # TODO: надо бы сбрасывать когда сбрасываем логическую группу
+    processed_windows_during_state_so_far: int = 0
+    current_window_step: int = 0
 
     def __init__(
         self,
         pipeline_config,
         executor: ProcessPoolExecutor,
         queue: mp.Queue,
-        state_config_path: Optional[str] = None,
+        state_config_path: str,
+        session_id: Optional[str] = None,
     ):
         self.pipeline_config = pipeline_config
         self.executor = executor
@@ -246,53 +265,134 @@ class StateManager:
         self.grouped_timestamps: Dict[IntEnum, List[float]] = {}
 
         self.fitted_components: Dict[str, Any] = {}
-        self.pending_operations: Dict[str, Future] = {}
         self.pipeline_ready = False
 
-        # TODO: hardcode? why?
-        self.window_size = 250
-        self.step_size = 125
-
-        self.inference_active = False
         self.last_processed_index = 0
         self.window_id = 0
         self.queue = queue
 
-        self.partial_fit_active = False
-        self.partial_fit_window_size = self.window_size
-        self.partial_fit_last_index: Dict[IntEnum, int] = {}
-        self._partial_fit_group: Optional[IntEnum] = None
+        self.collected_windows: List[ProcessedWindow] = []
 
-        self.action_handlers: Dict[TransitionAction, Callable] = {
-            TransitionAction.DO_NOTHING: lambda group: None,
-            TransitionAction.FIT: self._handle_fit,
-            TransitionAction.PARTIAL_FIT: self._handle_partial_fit,
-            TransitionAction.PREDICT: self._handle_predict,
+        # Windowed action runtime state/config
+        self.window_action_active: Dict[TransitionAction, bool] = {
+            action: False for action in TransitionAction
+        }
+        self.window_action_group: Dict[TransitionAction, Optional[IntEnum]] = {
+            action: None for action in TransitionAction
+        }
+        self.window_action_last_index: Dict[
+            TransitionAction, Dict[IntEnum, int]
+        ] = {action: {} for action in TransitionAction}
+        # Per-action window counters
+        self.window_action_counter: Dict[TransitionAction, int] = {
+            action: 0 for action in TransitionAction
+        }
+        # Track segment starts per logical group to avoid cross-boundary windows
+        self.group_segment_start: Dict[IntEnum, int] = {}
+        self.current_collection_group: Optional[IntEnum] = None
+
+        # Map windowed actions to their executors (unified)
+        self.window_action_executor = {
+            TransitionAction.PARTIAL_FIT: (
+                lambda: self._maybe_process_windowed_action(
+                    TransitionAction.PARTIAL_FIT
+                )
+            ),
+            TransitionAction.COLLECT_FOR_TRAIN: (
+                lambda: self._maybe_process_windowed_action(
+                    TransitionAction.COLLECT_FOR_TRAIN
+                )
+            ),
+            TransitionAction.PREDICT: (
+                lambda: self._maybe_process_windowed_action(
+                    TransitionAction.PREDICT
+                )
+            ),
         }
 
-        if state_config_path:
-            runtime: StateMachineRuntime = load_state_machine_from_yaml(
-                state_config_path
-            )
-            self.processing_state = (
-                runtime.processing_state_enum
-            )  # dynamic enums
-            self.logical_group = runtime.logical_group_enum
-            self.states = runtime.states
-            self.current_state = list(runtime.processing_state_enum)[0]
-            # Initialize grouped buffers for dynamic groups
-            self.grouped_samples = {group: [] for group in self.logical_group}
-            self.grouped_timestamps = {
-                group: [] for group in self.logical_group
-            }
-            self.partial_fit_last_index = {
-                group: 0 for group in self.logical_group
-            }
-        else:
-            # Require config; no inline fallback
-            raise RuntimeError(
-                "State machine YAML config path must be provided"
-            )
+        self._session_id = session_id
+        self._state_visit_counter = 0
+
+        runtime: StateMachineRuntime = load_state_machine_from_yaml(
+            state_config_path
+        )
+        self.processing_state = runtime.processing_state_enum
+        self.logical_group = runtime.logical_group_enum
+        self.states = runtime.states
+        self.current_state = list(runtime.processing_state_enum)[0]
+        self._state_visit_counter = 0
+        # Initialize grouped buffers for dynamic groups
+        self.grouped_samples = {group: [] for group in self.logical_group}
+        self.grouped_timestamps = {
+            group: [] for group in self.logical_group
+        }
+        self.partial_fit_last_index = {
+            group: 0 for group in self.logical_group
+        }
+        self.group_segment_start = {group: 0 for group in self.logical_group}
+
+        # Strictly typed windowing from runtime
+        self.window_action_window_size = runtime.window_size
+        self.window_action_step_size: Dict[TransitionAction, int] = {
+            action: int(step) for action, step in runtime.step_size_by_action.items()
+        }
+
+        # Submitters and callbacks for windowed actions (data-driven)
+        self.submit_map: Dict[
+            TransitionAction,
+            Callable[[np.ndarray, List[float], WindowMetadata, IntEnum], Future],
+        ] = {
+            TransitionAction.PARTIAL_FIT: lambda data, ts, meta, group: self.executor.submit(
+                self.pipeline_config.partial_fit_components,
+                data,
+                self.fitted_components,
+            ),
+            TransitionAction.COLLECT_FOR_TRAIN: lambda data, ts, meta, group: self.executor.submit(
+                lambda w, t, m, g: ProcessedWindow(
+                    data=w,
+                    timestamps=t,
+                    metadata=m,
+                    class_label=int(g),
+                ),
+                data,
+                ts,
+                meta,
+                group,
+            ),
+            TransitionAction.PREDICT: lambda data, ts, meta, group: self.executor.submit(
+                process_window_in_pool,
+                data,
+                self.fitted_components.copy(),
+                self.pipeline_config,
+                meta,
+            ),
+        }
+        self.callback_map: Dict[TransitionAction, Callable[[Future], None]] = {
+            TransitionAction.PARTIAL_FIT: self._handle_components_update,
+            TransitionAction.COLLECT_FOR_TRAIN: self._handle_collect_result,
+            TransitionAction.PREDICT: self._handle_prediction_result,
+        }
+
+        # Action handlers (instance-bound)
+        self.action_handlers = {
+            TransitionAction.DO_NOTHING: lambda group: None,
+            TransitionAction.FIT: self._handle_fit,
+            TransitionAction.PARTIAL_FIT: (
+                lambda group: self._handle_window_action(
+                    TransitionAction.PARTIAL_FIT, group
+                )
+            ),
+            TransitionAction.PREDICT: (
+                lambda group: self._handle_window_action(
+                    TransitionAction.PREDICT, group
+                )
+            ),
+            TransitionAction.COLLECT_FOR_TRAIN: (
+                lambda group: self._handle_window_action(
+                    TransitionAction.COLLECT_FOR_TRAIN, group
+                )
+            ),
+        }
 
     def handle_events(self, events: List[int]):
         for event in events:
@@ -327,6 +427,7 @@ class StateManager:
         )
 
         self.current_state = next_state
+        self._state_visit_counter += 1
 
         self._run_actions_for_trigger(
             state_def=new_state_def,
@@ -374,55 +475,62 @@ class StateManager:
             )
             self.action_handlers[action](group)
 
-
     def add_new_samples(
         self, samples: List[np.ndarray], timestamps: List[float]
     ):
-        self._check_pending_operations()
-
         self.processed_samples.extend(samples)
         self.samples_timestamps.extend(timestamps)
 
         current_state_def = self.states[self.current_state]
         if current_state_def.data_collection_group:
             group = current_state_def.data_collection_group
+            # Start a new segment if group switched
+            if self.current_collection_group != group:
+                self.group_segment_start[group] = len(self.grouped_samples[group])
+                # Reset per-action last indices to segment start
+                for action in TransitionAction:
+                    self.window_action_last_index[action][group] = self.group_segment_start[group]
+                self.current_collection_group = group
             self.grouped_samples[group].extend(samples)
             self.grouped_timestamps[group].extend(timestamps)
 
-        if (
-            self.inference_active
-            and len(self.processed_samples) >= self.window_size
-        ):
-            self._maybe_process_latest_window()
-
-        if self.partial_fit_active:
-            self._maybe_partial_fit_latest_window()
-
-    def _check_pending_operations(self):
-        completed_ops = []
-        for op_id, future in self.pending_operations.items():
-            if future.done():
-                result = future.result()
-                if op_id.startswith("fit_") or op_id.startswith(
-                    "partial_fit_"
-                ):
-                    self.fitted_components.update(result)
-                    self.pipeline_ready = self._have_all_components()
-                    LOG_STATE.info("Async op %s completed successfully", op_id)
-                completed_ops.append(op_id)
-
-        for op_id in completed_ops:
-            del self.pending_operations[op_id]
+        for action, active in self.window_action_active.items():
+            if not active:
+                continue
+            executor = self.window_action_executor.get(action)
+            if executor is not None:
+                executor()
 
     def _have_all_components(self) -> bool:
         """Check if all pipeline steps are available in fitted_components."""
-        try:
-            return all(
-                step.name in self.fitted_components
-                for step in self.pipeline_config.steps
-            )
-        except Exception:
-            return False
+        return all(
+            step.name in self.fitted_components
+            for step in self.pipeline_config.steps
+        )
+
+    def _for_each_window(
+        self,
+        samples_buffer: List[np.ndarray],
+        timestamps_buffer: List[float],
+        start_index: int,
+        window_size: int,
+        step_size: int,
+        fn: Callable[[np.ndarray, List[float]], None],
+    ) -> int:
+        """Generic window iterator over buffers with configurable step."""
+        if (len(samples_buffer) - start_index) < window_size:
+            return start_index
+        while (len(samples_buffer) - start_index) >= window_size:
+            window_slice = samples_buffer[
+                start_index:start_index + window_size
+            ]
+            window_ts = timestamps_buffer[
+                start_index:start_index + window_size
+            ]
+            window_data = np.array(window_slice).T[None, :, :]
+            fn(window_data, window_ts)
+            start_index += step_size
+        return start_index
 
     def _handle_fit(self, data_group):
         if not self.grouped_samples[data_group]:
@@ -431,20 +539,10 @@ class StateManager:
             )
             return
 
-        # Guard: require at least one full window
-        if len(self.grouped_samples[data_group]) < self.window_size:
-            LOG_STATE.debug(
-                "Insufficient samples for fitting from %s: %d < %d",
-                data_group.name,
-                len(self.grouped_samples[data_group]),
-                self.window_size,
-            )
-            return
-
         group_data = np.array(self.grouped_samples[data_group]).T[
             None, :, :
         ]  # (n_times, n_channels) -> (1, n_channels, n_times)
-        op_id = f"fit_{data_group.name}_{len(self.pending_operations)}"
+        op_id = f"fit_{data_group.name}"
 
         # Fit only the next unfitted stateful step in pipeline order
         future = self.executor.submit(
@@ -452,7 +550,7 @@ class StateManager:
             group_data,
             self.fitted_components,
         )
-        self.pending_operations[op_id] = future
+        future.add_done_callback(self._handle_components_update)
         LOG_STATE.info(
             "Submitted async fit %s with %d samples from %s",
             op_id,
@@ -460,38 +558,37 @@ class StateManager:
             data_group.name,
         )
 
-    def _handle_partial_fit(self, data_group):
-        """Toggle periodic partial-fit mode for the given logical group."""
-        if self.partial_fit_active:
-            self.partial_fit_active = False
-            self._partial_fit_group = None
-            LOG_STATE.info("Disabled partial-fit for %s", data_group.name)
-            return
-        self.partial_fit_active = True
-        self._partial_fit_group = data_group
-        if data_group not in self.partial_fit_last_index:
-            self.partial_fit_last_index[data_group] = 0
-        LOG_STATE.info(
-            "Enabled partial-fit for %s window_size=%d",
-            data_group.name,
-            self.partial_fit_window_size,
+    def _handle_window_action(
+        self, action: TransitionAction, data_group: Optional[IntEnum]
+    ) -> None:
+        """Unified initializer/toggler for windowed actions.
+
+        No branching by action type; data-driven toggle and setup.
+        """
+        same_group = (
+            self.window_action_group[action] == data_group
+        )
+        new_active = not (self.window_action_active[action] and same_group)
+
+        self.window_action_active[action] = new_active
+        self.window_action_group[action] = data_group if new_active else None
+        _ = (
+            new_active
+            and data_group is not None
+            and self.window_action_last_index[action].setdefault(data_group, 0)
         )
 
-    def _handle_predict(self, data_group: Optional[IntEnum]):
-        # Toggle inference mode
-        self.inference_active = not self.inference_active
-        LOG_STATE.info(
-            "Inference %s",
-            "enabled" if self.inference_active else "disabled",
+        status = "enabled" if new_active else "disabled"
+        suffix = (
+            f" for {data_group.name}" if data_group is not None else ""
         )
+        LOG_STATE.info("%s %s%s", action.name, status, suffix)
 
     def _handle_prediction_result(self, future: Future):
         """Callback for completed prediction futures."""
         result = future.result()
         if result is None:
-            LOG_STATE.debug(
-                "Inference skipped for this window (incomplete pipeline or invalid data)"
-            )
+            LOG_STATE.debug("Inference skipped for this window")
             return
         if self.queue:
             self.queue.put(asdict(result))
@@ -504,75 +601,62 @@ class StateManager:
             result.processing_time,
         )
 
-    def _maybe_process_latest_window(self):
-        """Process latest window if we've accumulated enough new samples"""
-        samples_since_last = (
-            len(self.processed_samples) - self.last_processed_index
-        )
-
-        if samples_since_last >= self.step_size:
-            window_data = np.array(
-                # (n_times, n_channels) -> (1, n_channels, n_times)
-                self.processed_samples[-self.window_size :]
-            ).T[None, :, :]
-            window_timestamps = self.samples_timestamps[-self.window_size :]
-
-            window_metadata = WindowMetadata(
-                start_timestamp=window_timestamps[0],
-                end_timestamp=window_timestamps[-1],
-                window_id=f"window_{self.window_id}",
-            )
-
-            future = self.executor.submit(
-                process_window_in_pool,
-                window_data,
-                self.fitted_components.copy(),
-                self.pipeline_config,
-                window_metadata,
-            )
-            future.add_done_callback(self._handle_prediction_result)
-
-            self.last_processed_index += self.step_size
-            self.window_id += 1
-
-    def _maybe_partial_fit_latest_window(self):
-        """Submit non-overlapping partial-fit updates on the active group."""
-        group = self._partial_fit_group
+    def _maybe_process_windowed_action(self, action: TransitionAction):
+        group = self.window_action_group[action]
         if group is None:
             return
-        samples_buffer = self.grouped_samples[group]
-        start_index = self.partial_fit_last_index[group]
+        # Constrain to current segment to avoid cross-boundary windows
+        segment_start = self.group_segment_start.get(group, 0)
+        samples_buffer = self.grouped_samples[group][segment_start:]
+        timestamps_buffer = self.grouped_timestamps[group][segment_start:]
+        start_index = max(
+            self.window_action_last_index[action].get(group, 0) - segment_start,
+            0,
+        )
+        window_size = self.window_action_window_size
+        step_size = self.window_action_step_size[action]
 
-        available = len(samples_buffer) - start_index
-        if available < self.partial_fit_window_size:
-            return
+        def per_window_cb(window_data: np.ndarray, ts: List[float]):
+            self._handle_window_step(action, group, window_data, ts)
 
-        while (
-            len(samples_buffer) - start_index >= self.partial_fit_window_size
-        ):
-            window_slice = samples_buffer[
-                start_index : start_index + self.partial_fit_window_size
-            ]
-            window_data = np.array(window_slice).T[
-                None, :, :
-            ]  # (n_times, n_channels) -> (1, n_channels, n_times)
+        new_start = self._for_each_window(
+            samples_buffer,
+            timestamps_buffer,
+            start_index,
+            window_size,
+            step_size,
+            per_window_cb,
+        )
+        self.window_action_last_index[action][group] = segment_start + new_start
 
-            op_id = f"partial_fit_window_{group.name}_{self.window_id}_{len(self.pending_operations)}"
-            future = self.executor.submit(
-                self.pipeline_config.partial_fit_components,
-                window_data,
-                self.fitted_components,
-            )
-            self.pending_operations[op_id] = future
-            LOG_STATE.info(
-                "Submitted partial-fit %s starting at index %d",
-                op_id,
-                start_index,
-            )
+    def _handle_window_step(
+        self,
+        action: TransitionAction,
+        group: IntEnum,
+        window_data: np.ndarray,
+        ts: List[float],
+    ) -> None:
+        window_metadata = WindowMetadata(
+            start_timestamp=ts[0],
+            end_timestamp=ts[-1],
+            window_id=f"window_{self.window_id}",
+            session_id=self._session_id,
+            state_visit_id=self._state_visit_counter,
+        )
+        future = self.submit_map[action](window_data, ts, window_metadata, group)
+        future.add_done_callback(self.callback_map[action])
+        self.window_action_counter[action] += 1
+        self.window_id += 1
 
-            start_index += self.partial_fit_window_size
+    def _handle_components_update(self, future: Future):
+        result = future.result()
+        LOG_STATE.info("Fitted components updated: %s", list(result.keys()))
+        self.fitted_components.update(result)
+        self.pipeline_ready = self._have_all_components()
 
-        self.partial_fit_last_index[group] = start_index
+    def _handle_collect_result(self, future: Future):
+        window = future.result()
+        self.collected_windows.append(window)
 
 
 class EEGService:
@@ -583,6 +667,7 @@ class EEGService:
         tcp_port: int | None = None,
         tcp_retries: int | None = None,
         state_config_path: Optional[str] = None,
+        session_id: Optional[str] = None,
     ):
         self.stream_manager = StreamManager()
         self.executor = ProcessPoolExecutor()
@@ -595,6 +680,7 @@ class EEGService:
             self.executor,
             self.output_queue,
             state_config_path,
+            session_id,
         )
         host = tcp_host if tcp_host is not None else DEFAULT_TCP_HOST
         port = tcp_port if tcp_port is not None else DEFAULT_TCP_PORT
@@ -610,7 +696,9 @@ class EEGService:
             try:
                 events = self.stream_manager.pull_events()
                 if events:
-                    self.state_manager.handle_events([e[TRIGGER_CODE_INDEX] for e in events])
+                    self.state_manager.handle_events(
+                        [e[TRIGGER_CODE_INDEX] for e in events]
+                    )
                 samples, timestamps = self.stream_manager.pull_samples()
                 if samples:
                     self.state_manager.add_new_samples(
@@ -624,7 +712,6 @@ class EEGService:
     def stop(self):
         """Clean shutdown of all components"""
         LOG.info("Stopping EEG service...")
-        self.state_manager.inference_active = False
         self.tcp_sender.stop()
         self.executor.shutdown(wait=True)
         LOG.info("EEG service stopped")

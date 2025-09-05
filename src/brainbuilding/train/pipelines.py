@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, List, Tuple, Dict, Any
 
 import numpy as np
 from sklearn.svm import SVC  # type: ignore
@@ -6,6 +6,7 @@ from pyriemann.spatialfilters import CSP  # type: ignore
 from sklearn.decomposition import KernelPCA  # type: ignore
 from sklearn.neighbors import KNeighborsClassifier  # type: ignore
 from sklearn.pipeline import Pipeline
+import yaml  # type: ignore
 
 
 from ..core.transformers import (
@@ -19,6 +20,7 @@ from ..core.transformers import (
     TangentSpaceProjector,
     StructuredColumnTransformer,
 )
+from brainbuilding.service.pipeline import PipelineYAMLConfigModel, COMPONENT_REGISTRY
 
 
 N_NEIGHBORS = 25
@@ -179,7 +181,7 @@ class OnlinePipeline(Pipeline):
             This estimator.
         """
         Xt = X
-        for name, step in self.steps:
+        for _, step in self.steps:
             if hasattr(step, "partial_fit"):
                 # If step supports partial_fit, use it
                 step.partial_fit(Xt, y, **fit_params)
@@ -189,3 +191,34 @@ class OnlinePipeline(Pipeline):
                 Xt = step.transform(Xt)
 
         return self
+
+
+# -------------------------------------------------------
+# YAML-driven training pipeline (mirrors runtime semantics)
+# -------------------------------------------------------
+
+def _instantiate(component: str, params: Dict[str, Any]) -> Optional[object]:
+    """Instantiate from the shared runtime registry."""
+    registry = COMPONENT_REGISTRY
+    cls = registry.get(component)
+    if cls is None:
+        return None
+    return cls(**params) if params else cls()
+
+
+def build_training_pipeline_from_yaml(path: str) -> OnlinePipeline:
+    """Build an OnlinePipeline for training from the shared YAML config."""
+    with open(path, "r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f)
+    cfg = PipelineYAMLConfigModel(**raw)
+
+    training_steps: List[Tuple[str, object]] = []
+    for step_cfg in cfg.steps:
+        if step_cfg.calibration:
+            continue
+        params = step_cfg.init_params or {}
+        obj = _instantiate(step_cfg.component, params)
+        if obj is None:
+            continue
+        training_steps.append((step_cfg.name, obj))
+    return OnlinePipeline(training_steps)

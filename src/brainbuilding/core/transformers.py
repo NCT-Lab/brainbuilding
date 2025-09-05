@@ -153,8 +153,15 @@ class ParallelTransportTransformer(BaseEstimator, TransformerMixin):
         """Extract covariance matrices from structured array"""
         return X["sample"]
 
+    # TODO: we should use configurable field name
     def _extract_subject_ids(self, X: np.ndarray) -> np.ndarray:
-        """Extract subject IDs from structured array"""
+        """Extract per-session IDs from structured array.
+
+        Prefer 'session_id' if present; fall back to 'subject_id' for backward
+        compatibility.
+        """
+        if "session_id" in X.dtype.names:
+            return X["session_id"]
         return X["subject_id"]
 
     def fit(

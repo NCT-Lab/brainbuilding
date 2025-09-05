@@ -13,12 +13,19 @@ logical_groups:
   INFERENCE: 3
 
 event_ids:
-  EYE_WARMUP_DESC: -1
-  EYE_WARMUP_BLINK: 10
-  EYE_WARMUP_TEXT: 11
-  EYE_WARMUP_MOVE: 12
-  BACKGROUND: 1
+  EYE_WARMUP_DESC: 1
+  EYE_WARMUP_BLINK: 2
+  EYE_WARMUP_TEXT: 3
+  EYE_WARMUP_MOVE: 4
+  BACKGROUND: 5
   TASK_PERIOD: 10
+
+windowing:
+  window_size: 250
+  step_sizes:
+    PARTIAL_FIT: 250
+    COLLECT_FOR_TRAIN: 250
+    PREDICT: 125
 
 states:
   Idle:

@@ -19,7 +19,7 @@ from sklearn.svm import SVC
 from dataclasses import dataclass
 from typing import Any, Dict, List, Type, Optional, Tuple
 import yaml  # type: ignore
-from pydantic import BaseModel, Field  # type: ignore
+from pydantic import BaseModel, Field, field_validator  # type: ignore
 
 
 @dataclass
@@ -114,22 +114,29 @@ class PipelineConfig:
 class PipelineStepConfigModel(BaseModel):
     name: str
     component: str
+    # TODO: remove this field and its usage entirely
     is_classifier: bool = False
     requires_fit: bool = True
+    calibration: bool = False
     init_params: Dict[str, Any] = Field(default_factory=dict)
     pretrained_path: Optional[str] = None
+
+    @field_validator("component")
+    @classmethod
+    def _validate_component(cls, v: str) -> str:
+        if v not in COMPONENT_REGISTRY:
+            raise ValueError(
+                f"Unknown component class in pipeline config: {v}"
+            )
+        return v
 
 
 class PipelineYAMLConfigModel(BaseModel):
     steps: List[PipelineStepConfigModel] = Field(default_factory=list)
 
 
-def _component_registry() -> Dict[str, Type]:
-    """Return a strict registry of available pipeline component classes.
-
-    This avoids dynamic getattr/imports per workspace rules. Extend explicitly.
-    """
-    return {
+# Single source of truth registry constant for static tools and validators
+COMPONENT_REGISTRY: Dict[str, Type] = {
         # Preprocessing and transformation
         "EyeRemoval": EyeRemoval,
         "SimpleWhiteningTransformer": SimpleWhiteningTransformer,
@@ -142,13 +149,6 @@ def _component_registry() -> Dict[str, Type]:
         "CSP": CSP,
         "SVC": SVC,
     }
-
-
-def _resolve_component_class(name: str) -> Type:
-    registry = _component_registry()
-    if name not in registry:
-        raise ValueError(f"Unknown component class in pipeline config: {name}")
-    return registry[name]
 
 
 def load_pipeline_from_yaml(path: str) -> Tuple[PipelineConfig, Dict[str, Any]]:
@@ -166,7 +166,7 @@ def load_pipeline_from_yaml(path: str) -> Tuple[PipelineConfig, Dict[str, Any]]:
     pretrained: Dict[str, Any] = {}
 
     for s in cfg.steps:
-        component_cls = _resolve_component_class(s.component)
+        component_cls = COMPONENT_REGISTRY[s.component]
         step = PipelineStep(
             name=s.name,
             component_class=component_cls,

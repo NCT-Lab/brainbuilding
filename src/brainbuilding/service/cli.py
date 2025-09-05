@@ -29,6 +29,7 @@ from brainbuilding.train.pipelines import (
     PT_CSP_LOG,
     SVC_CLASSIFICATION,
     OnlinePipeline,
+    build_training_pipeline_from_yaml,
 )
 from joblib import load as joblib_load  # type: ignore
 from joblib import dump as joblib_dump  # type: ignore
@@ -127,6 +128,12 @@ def create_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_SFREQ,
         help="Sampling frequency in Hz",
+    )
+    processing_group.add_argument(
+        "--session-id",
+        type=str,
+        default=None,
+        help="Session identifier (online run)",
     )
     processing_group.add_argument(
         "--scale-factor",
@@ -232,6 +239,12 @@ def create_parser() -> argparse.ArgumentParser:
         type=int,
         default=2,
         help="Exclude samples with this label from training (set to -1 to disable)",
+    )
+    train_parser.add_argument(
+        "--pipeline-config",
+        type=str,
+        default="configs/pipeline_config.yaml",
+        help="Path to YAML pipeline configuration for training",
     )
 
     return parser
@@ -601,12 +614,14 @@ def _build_dataset_from_raw_dir(raw_dir: str):
 
     subject_dirs = [d for d in os.listdir(raw_dir) if d.isdigit()]
     subject_ids = sorted([int(s) for s in subject_dirs])
+    samples_session_ids = []
     all_data = []
     for sid in subject_ids:
         raw = _load_subject_raw(raw_dir, sid)
         raw = _prepare_raw_channels(raw)
         raw.resample(250, npad="auto")  # match DEFAULT_SFREQ
         subject_data = _extract_epochs_from_raw(raw, sid)
+        samples_session_ids.extend([sid] * len(subject_data))
         if len(subject_data) > 0:
             all_data.append(subject_data)
 
@@ -616,9 +631,11 @@ def _build_dataset_from_raw_dir(raw_dir: str):
     data = _np.concatenate(all_data)
     X = data
     y = data["label"]
+    X['session_id'] = samples_session_ids
     return X, y
 
 
+# TODO: getattr for commands? refactor this
 def main(argv=None):
     args = parse_args(argv)
 
@@ -627,13 +644,11 @@ def main(argv=None):
         setup_logging("INFO", None)
         # Always build from raw-data-dir
         X, y = _build_dataset_from_raw_dir(args.raw_data_dir)
-        steps = _create_training_steps()
-        pipeline = OnlinePipeline(steps)
+        pipeline = build_training_pipeline_from_yaml(args.pipeline_config)
         logging.info(
             "Fitting training pipeline (whitening → cov → PT → CSP → SVC) from raw data..."
         )
-        y_non_background = X["label"][X["is_background"] == 0]
-        pipeline.fit(X, y_non_background)
+        pipeline.fit(X, y)
 
         # Extract fitted components and save
         pt = pipeline.named_steps.get("pt")
@@ -669,6 +684,7 @@ def main(argv=None):
         tcp_port=config.tcp_port,
         tcp_retries=config.tcp_retries,
         state_config_path=getattr(args, "state_config", None),
+        session_id=getattr(args, "session_id", None),
     )
 
     if pretrained:

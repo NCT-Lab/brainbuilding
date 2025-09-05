@@ -1,8 +1,8 @@
 steps:
   - name: ica
     component: EyeRemoval
+    calibration: true
     requires_fit: true
-    is_classifier: false
     init_params:
       n_components: null
       remove_veog: true
@@ -11,15 +11,15 @@ steps:
 
   - name: whitening
     component: SimpleWhiteningTransformer
+    calibration: true
     requires_fit: true
-    is_classifier: false
     init_params:
       n_channels: 18
 
   - name: augmentation
     component: AugmentedDataset
+    calibration: true
     requires_fit: false
-    is_classifier: false
     init_params:
       order: 4
       lag: 8
