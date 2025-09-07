@@ -1,5 +1,4 @@
-from sklearn.base import ClassifierMixin
-from brainbuilding.core.config import CHANNELS_TO_KEEP
+# NOTE: Keep imports minimal; avoid unused project-wide constants here
 from brainbuilding.core.transformers import (
     AugmentedDataset,
     Covariances,
@@ -7,35 +6,41 @@ from brainbuilding.core.transformers import (
     ParallelTransportTransformer,
     SimpleWhiteningTransformer,
     StructuredArrayBuilder,
+    StructuredColumnTransformer,
     StructuredToArray,
+    CustomSVC,
 )
 
 
 import numpy as np
-from pyriemann.spatialfilters import CSP
-from sklearn.svm import SVC
+from pyriemann.spatialfilters import CSP  # type: ignore
+from sklearn.svm import SVC  # type: ignore
 
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Type, Optional, Tuple
+import inspect
 import yaml  # type: ignore
-from pydantic import BaseModel, Field, field_validator  # type: ignore
+from pydantic import (
+    BaseModel,
+    Field,
+    field_validator,
+)
+from typing import Any as _PydanticAny
+import logging
 
+LOG_PIPELINE = logging.getLogger("brainbuilding.service.pipeline")
 
 @dataclass
 class PipelineStep:
     name: str
     component_class: Type
-    is_classifier: bool = False
     init_params: Optional[Dict[str, Any]] = None
     requires_fit: bool = True
-
-    def wrap_component(self, component) -> "PipelineStepBase":
-        """Wrap transformer or classifier with unified interface"""
-        if self.is_classifier:
-            return ClassifierWrapper(component)
-        else:
-            return TransformerWrapper(component)
+    calibration: bool = False
+    apply_method: str = "transform"
+    use_column: Optional[str] = None
+    pass_class_label: bool = False
 
 
 @dataclass
@@ -45,7 +50,9 @@ class PipelineConfig:
     def partial_fit_components(
         self, data: np.ndarray, fitted_components: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Single forward pass partial-fit and transform sequentially for available steps."""
+        """Single forward pass partial-fit and transform sequentially for
+        available steps.
+        """
         updated_components: Dict[str, Any] = {}
         current: np.ndarray = data
 
@@ -61,14 +68,30 @@ class PipelineConfig:
             else:
                 updated_components[step.name] = component
 
-            wrapped = step.wrap_component(component)
-            if (
-                step.requires_fit
-                and hasattr(component, "partial_fit")
-                and not step.is_classifier
-            ):
-                wrapped.partial_fit(current)
-            current = wrapped.transform(current)
+            if step.requires_fit and hasattr(component, "partial_fit"):
+                args = [current[step.use_column]] if step.use_column is not None else [current]
+                if step.pass_class_label:
+                    args.append(current["label"])
+                component.partial_fit(*args)
+
+            # Apply forward using column-aware wrapping where needed
+            if step.use_column is None:
+                apply_fn = getattr(component, step.apply_method)
+                current = apply_fn(current)
+            else:
+                if step.apply_method in ("transform", "fit_transform"):
+                    wrapper = StructuredColumnTransformer(
+                        column=step.use_column, transformer=component
+                    )
+                    apply_fn = getattr(wrapper, step.apply_method)
+                    current = apply_fn(current)
+                else:
+                    LOG_PIPELINE.error(
+                        "Pipeline component requires column application"
+                        "and does not use either transform or transform."
+                        "This should not happen, returning empty fitted components"
+                    )
+                    return {}
 
         return updated_components
 
@@ -77,10 +100,12 @@ class PipelineConfig:
         data: np.ndarray,
         fitted_components: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """Fit only the first stateful (requires_fit=True) step that isn't fitted yet.
+        """Fit only the first stateful (requires_fit=True) step that isn't
+        fitted yet.
 
-        Stateless steps are instantiated as needed to prepare the input (single forward pass).
-        No transforms are applied beyond the fitted step.
+        Stateless steps are instantiated as needed to prepare the input
+        (single forward pass). No transforms are applied beyond the fitted
+        step.
         """
         newly_fitted: Dict[str, Any] = {}
         current: np.ndarray = data
@@ -95,17 +120,184 @@ class PipelineConfig:
             if component is None:
                 init_kwargs = step.init_params or {}
                 component = step.component_class(**init_kwargs)
-                if step.requires_fit and not step.is_classifier:
-                    component.fit(current)
+                if step.requires_fit:
+                    args = [current[step.use_column]] if step.use_column is not None else [current]
+                    if step.pass_class_label:
+                        args.append(current["label"])
+                    component.fit(*args)
                     newly_fitted[step.name] = component
                     break
                 else:
                     newly_fitted[step.name] = component
 
-            wrapped = step.wrap_component(component)
-            current = wrapped.transform(current)
+            # Stateless or already-fitted: propagate forward once
+            if step.use_column is None:
+                apply_fn = getattr(component, step.apply_method)
+                current = apply_fn(current)
+            else:
+                if step.apply_method in ("transform", "fit_transform"):
+                    wrapper = StructuredColumnTransformer(
+                        column=step.use_column, transformer=component
+                    )
+                    apply_fn = getattr(wrapper, step.apply_method)
+                    current = apply_fn(current)
+                else:
+                    LOG_PIPELINE.error(
+                        "Pipeline component requires column application"
+                        "and does not use either transform or transform."
+                        "This should not happen, returning empty fitted components"
+                    )
+                    return {}
 
         return newly_fitted
+
+    def predict(
+        self,
+        data: np.ndarray,
+        fitted_components: Dict[str, Any],
+    ) -> Optional[Any]:
+        current: np.ndarray = data
+        for step in self.steps:
+            component = fitted_components.get(step.name, None)
+
+            if component is None:
+                LOG_PIPELINE.error(
+                    (
+                        "Some unfitted component has been encountered "
+                        "during prediction phase. This should not happen"
+                    )
+                )
+                return None
+
+            if step.use_column is None:
+                apply_fn = getattr(component, step.apply_method)
+                current = apply_fn(current)
+            else:
+                if step.apply_method in ("transform", "fit_transform"):
+                    wrapper = StructuredColumnTransformer(
+                        column=step.use_column, transformer=component
+                    )
+                    apply_fn = getattr(wrapper, step.apply_method)
+                    current = apply_fn(current)
+                else:
+                    LOG_PIPELINE.error(
+                        "Pipeline component requires column application"
+                        "and does not use either transform or transform."
+                        "This should not happen, returning None"
+                    )
+                    return None
+
+        return current
+        
+
+    # -----------------------------
+    # Calibration helpers
+    # -----------------------------
+
+    def get_calibration_steps(self) -> List["PipelineStep"]:
+        """Return steps that are marked as calibration steps in the YAML."""
+        return [s for s in self.steps if s.calibration]
+
+    def get_training_steps(self) -> List["PipelineStep"]:
+        """Return steps that are NOT marked as calibration steps."""
+        return [s for s in self.steps if not s.calibration]
+
+    def apply_calibration(
+        self,
+        data: np.ndarray,
+        fitted_components: Dict[str, Any],
+    ) -> np.ndarray:
+        """Apply only calibration steps to the provided data.
+
+        All required calibration components must be already fitted. Stateless
+        components (requires_fit=False) will be instantiated on demand and
+        cached into fitted_components for reuse.
+        """
+        current: np.ndarray = data
+        for step in self.get_calibration_steps():
+            component = fitted_components.get(step.name)
+            if component is None:
+                if step.requires_fit:
+                    raise ValueError(
+                        f"Calibration component '{step.name}' is not fitted"
+                    )
+                init_kwargs = step.init_params or {}
+                component = step.component_class(**init_kwargs)
+                fitted_components[step.name] = component
+
+            if step.use_column is None:
+                apply_fn = getattr(component, step.apply_method)
+                current = apply_fn(current)
+            else:
+                if step.apply_method in ("transform", "fit_transform"):
+                    wrapper = StructuredColumnTransformer(
+                        column=step.use_column, transformer=component
+                    )
+                    apply_fn = getattr(wrapper, step.apply_method)
+                    current = apply_fn(current)
+                else:
+                    LOG_PIPELINE.error(
+                        "Pipeline component requires column application"
+                        "and does not use either transform or transform."
+                        "This should not happen, returning None"
+                    )
+                    return None
+
+        return current
+
+    def training_only_config(self) -> "PipelineConfig":
+        """Create a new PipelineConfig with non-calibration steps only."""
+        return PipelineConfig(steps=self.get_training_steps())
+
+    def fit_training(
+        self,
+        data: np.ndarray,
+        labels: Optional[np.ndarray] = None,
+    ) -> Dict[str, Any]:
+        """Fit all non-calibration steps sequentially and return components.
+
+        Stateless steps are instantiated and applied to propagate the data.
+        """
+        fitted: Dict[str, Any] = {}
+        current: np.ndarray = data
+
+        for step in self.get_training_steps():
+            LOG_PIPELINE.info(f"Fitting step {step.name}")
+            try:
+                LOG_PIPELINE.info(f"{current['sample'].shape=}")
+            except Exception:
+                LOG_PIPELINE.info(f"{current.shape=}")
+            init_kwargs = step.init_params or {}
+            component = step.component_class(**init_kwargs)
+
+            if step.requires_fit and hasattr(component, "fit"):
+                args = [current[step.use_column]] if step.use_column is not None else [current]
+                if step.pass_class_label:
+                    args.append(labels)
+                component.fit(*args)
+                fitted[step.name] = component
+
+            # Propagate forward if apply method exists (column-aware)
+            if hasattr(component, step.apply_method):
+                if step.use_column is None:
+                    apply_fn = getattr(component, step.apply_method)
+                    current = apply_fn(current)
+                else:
+                    if step.apply_method in ("transform", "fit_transform"):
+                        wrapper = StructuredColumnTransformer(
+                            column=step.use_column, transformer=component
+                        )
+                        apply_fn = getattr(wrapper, step.apply_method)
+                        current = apply_fn(current)
+                    else:
+                        LOG_PIPELINE.error(
+                            "Pipeline component requires column application"
+                            "and does not use either transform or transform."
+                            "This should not happen, returning None"
+                        )
+                        return None
+
+        return fitted
 
 # -----------------------------
 # YAML-driven pipeline loading
@@ -114,12 +306,13 @@ class PipelineConfig:
 class PipelineStepConfigModel(BaseModel):
     name: str
     component: str
-    # TODO: remove this field and its usage entirely
-    is_classifier: bool = False
     requires_fit: bool = True
     calibration: bool = False
+    apply_method: str = "transform"
     init_params: Dict[str, Any] = Field(default_factory=dict)
     pretrained_path: Optional[str] = None
+    use_column: Optional[str] = None
+    pass_class_label: bool = False
 
     @field_validator("component")
     @classmethod
@@ -128,6 +321,20 @@ class PipelineStepConfigModel(BaseModel):
             raise ValueError(
                 f"Unknown component class in pipeline config: {v}"
             )
+        return v
+
+    @field_validator("apply_method")
+    @classmethod
+    def _validate_apply_method(
+        cls, v: str, info: _PydanticAny
+    ) -> str:
+        comp = getattr(info, "data", {}).get("component")
+        if isinstance(comp, str) and comp in COMPONENT_REGISTRY:
+            component_cls = COMPONENT_REGISTRY[comp]
+            if not hasattr(component_cls, v):
+                raise ValueError(
+                    f"apply_method '{v}' is not available on component '{comp}'"
+                )
         return v
 
 
@@ -148,10 +355,13 @@ COMPONENT_REGISTRY: Dict[str, Type] = {
         # Feature extraction / models
         "CSP": CSP,
         "SVC": SVC,
+        "CustomSVC": CustomSVC,
     }
 
 
-def load_pipeline_from_yaml(path: str) -> Tuple[PipelineConfig, Dict[str, Any]]:
+def load_pipeline_from_yaml(
+    path: str,
+) -> Tuple[PipelineConfig, Dict[str, Any]]:
     """Load a PipelineConfig and initial fitted components from a YAML file.
 
     Returns (pipeline_config, pretrained_components).
@@ -159,7 +369,9 @@ def load_pipeline_from_yaml(path: str) -> Tuple[PipelineConfig, Dict[str, Any]]:
     with open(path, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
     if not isinstance(raw, dict):
-        raise ValueError("Invalid pipeline YAML: expected a mapping at top level")
+        raise ValueError(
+            "Invalid pipeline YAML: expected a mapping at top level"
+        )
     cfg = PipelineYAMLConfigModel(**raw)
 
     steps: List[PipelineStep] = []
@@ -170,72 +382,17 @@ def load_pipeline_from_yaml(path: str) -> Tuple[PipelineConfig, Dict[str, Any]]:
         step = PipelineStep(
             name=s.name,
             component_class=component_cls,
-            is_classifier=s.is_classifier,
             init_params=s.init_params or {},
             requires_fit=s.requires_fit,
+            calibration=s.calibration,
+            apply_method=s.apply_method or "transform",
+            use_column=s.use_column,
+            pass_class_label=s.pass_class_label,
         )
         steps.append(step)
 
     return PipelineConfig(steps=steps), pretrained
 
 
-class PipelineStepBase:
-    """Abstract base for pipeline steps to unify transformers and classifiers"""
-
-    def transform(self, data: np.ndarray) -> np.ndarray:
-        """Unified interface for both transform and predict operations"""
-        raise NotImplementedError
-
-    def partial_fit(
-        self, data: np.ndarray, labels: Optional[np.ndarray] = None
-    ):
-        """Unified interface for online learning"""
-        raise NotImplementedError
-
-
-class TransformerWrapper(PipelineStepBase):
-    def __init__(self, transformer):
-        self.transformer = transformer
-
-    def transform(self, data: np.ndarray) -> np.ndarray:
-        return self.transformer.transform(data)
-
-    def partial_fit(
-        self, data: np.ndarray, labels: Optional[np.ndarray] = None
-    ):
-        if hasattr(self.transformer, "partial_fit"):
-            self.transformer.partial_fit(data)
-
-
-class ClassifierWrapper(PipelineStepBase):
-    def __init__(self, classifier: ClassifierMixin):
-        self.classifier: ClassifierMixin = classifier
-
-    def transform(self, data: np.ndarray) -> np.ndarray:
-        # Return [predicted_label, predicted_probability] for downstream consumption
-        try:
-            if hasattr(self.classifier, "predict_proba"):
-                proba = self.classifier.predict_proba(data)
-                if proba.ndim == 2 and proba.shape[0] >= 1:
-                    pred_idx = int(np.argmax(proba[0]))
-                    pred = (
-                        self.classifier.classes_[pred_idx]
-                        if hasattr(self.classifier, "classes_")
-                        else pred_idx
-                    )
-                    conf = float(np.max(proba[0]))
-                    return np.array([pred, conf])
-        except Exception:
-            pass
-
-        pred_arr = self.classifier.predict(data)
-        pred = (
-            int(pred_arr[0]) if hasattr(pred_arr, "__len__") else int(pred_arr)
-        )
-        return np.array([pred, 1.0])
-
-    def partial_fit(
-        self, data: np.ndarray, labels: Optional[np.ndarray] = None
-    ):
-        if hasattr(self.classifier, "partial_fit") and labels is not None:
-            self.classifier.partial_fit(data, labels)
+class PipelineStepBase:  # legacy placeholder (removed wrappers)
+    pass

@@ -5,39 +5,34 @@ processing_states:
   EyeWarmupText: 3
   EyeWarmupMove: 4
   Background: 5
-  Rest: 6
-  Imagery: 7
+  Inference: 6
 
 logical_groups:
-  REST: 0
-  IMAGERY: 1
-  EYE_MOVEMENT: 2
-  BACKGROUND: 3
+  EYE_MOVEMENT: 1
+  BACKGROUND: 2
+  INFERENCE: 3
 
 event_ids:
-  EYE_WARMUP_DESC: 0
-  EYE_WARMUP_BLINK: 10
-  EYE_WARMUP_TEXT: 11
-  EYE_WARMUP_MOVE: 12
-  BACKGROUND: 1
-  REST: 2
-  ATTENTION: 3
-  POINT: 5
-  VAS: 0
-  IMAGE_LEFT: 5
-  IMAGE_RIGHT: 4
+  EYE_WARMUP_DESC: 1
+  EYE_WARMUP_BLINK: 2
+  EYE_WARMUP_TEXT: 3
+  EYE_WARMUP_MOVE: 4
+  BACKGROUND: 5
+  TASK_PERIOD: 10
 
 windowing:
-  window_size: 1500
+  window_size: 250
   step_sizes:
-    PARTIAL_FIT: 1500
-    COLLECT_FOR_TRAIN: 1500
+    PARTIAL_FIT: 250
+    COLLECT_FOR_TRAIN: 250
     PREDICT: 125
 
 states:
   Idle:
     accepted_events:
       EYE_WARMUP_DESC: EyeWarmupDesc
+      BACKGROUND: Background
+      TASK_PERIOD: Inference
   EyeWarmupDesc:
     accepted_events:
       EYE_WARMUP_BLINK: EyeWarmupBlink
@@ -65,24 +60,19 @@ states:
         FIT: EYE_MOVEMENT
   Background:
     accepted_events:
-      REST: Rest
-      EYE_WARMUP_DESC: EyeWarmupDesc
-      IMAGE_LEFT: Imagery
-      IMAGE_RIGHT: Imagery
-      POINT: Imagery
+      TASK_PERIOD: Inference
     data_collection_group: BACKGROUND
     on_exit_actions: [FIT]
-  Rest:
+  Inference:
     accepted_events:
-      IMAGE_LEFT: Imagery
-      IMAGE_RIGHT: Imagery
-      POINT: Imagery
+      EYE_WARMUP_DESC: EyeWarmupDesc
       BACKGROUND: Background
-    data_collection_group: REST
-    on_exit_actions: [COLLECT_FOR_TRAIN]
-  Imagery:
-    accepted_events:
-      REST: Rest
-      BACKGROUND: Background
-    data_collection_group: IMAGERY
-    on_exit_actions: [COLLECT_FOR_TRAIN]
+    data_collection_group: INFERENCE
+    on_entry_actions: [PREDICT, PARTIAL_FIT]
+    on_exit_actions: [PREDICT, PARTIAL_FIT]
+    on_entry_action_groups:
+      PREDICT: INFERENCE
+      PARTIAL_FIT: INFERENCE
+    on_exit_action_groups:
+      PREDICT: INFERENCE
+      PARTIAL_FIT: INFERENCE

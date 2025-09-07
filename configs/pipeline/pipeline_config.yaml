@@ -3,6 +3,7 @@ steps:
     component: EyeRemoval
     calibration: true
     requires_fit: true
+    use_column: sample
     init_params:
       n_components: null
       remove_veog: true
@@ -13,6 +14,7 @@ steps:
     component: SimpleWhiteningTransformer
     calibration: true
     requires_fit: true
+    use_column: sample
     init_params:
       n_channels: 18
 
@@ -20,29 +22,22 @@ steps:
     component: AugmentedDataset
     calibration: true
     requires_fit: false
+    use_column: sample
     init_params:
       order: 4
       lag: 8
 
   - name: covariance
     component: Covariances
+    calibration: true
     requires_fit: false
-    is_classifier: false
+    use_column: sample
     init_params:
       estimator: oas
-
-  - name: to_structured
-    component: StructuredArrayBuilder
-    requires_fit: false
-    is_classifier: false
-    init_params:
-      subject_id: 0
-      sample_field: sample
 
   - name: pt
     component: ParallelTransportTransformer
     requires_fit: true
-    is_classifier: false
     init_params:
       include_means: false
       prevent_subject_drift: true
@@ -51,23 +46,23 @@ steps:
   - name: from_structured
     component: StructuredToArray
     requires_fit: false
-    is_classifier: false
     init_params:
       field: sample
 
   - name: csp
     component: CSP
     requires_fit: true
-    is_classifier: false
+    pass_class_label: true
     init_params:
       nfilter: 10
-      log: false
+      log: true
       metric: riemann
 
   - name: classifier
-    component: SVC
+    component: CustomSVC
     requires_fit: true
-    is_classifier: true
+    apply_method: predict_label_and_confidence
+    pass_class_label: true
     init_params:
       kernel: rbf
       C: 0.696

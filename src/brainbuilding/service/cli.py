@@ -29,7 +29,6 @@ from brainbuilding.train.pipelines import (
     PT_CSP_LOG,
     SVC_CLASSIFICATION,
     OnlinePipeline,
-    build_training_pipeline_from_yaml,
 )
 from joblib import load as joblib_load  # type: ignore
 from joblib import dump as joblib_dump  # type: ignore
@@ -201,7 +200,10 @@ def create_parser() -> argparse.ArgumentParser:
         "--preload-dir",
         type=str,
         default="models",
-        help="Directory containing preloaded components (pt.pkl optional), csp.json, classifier.joblib",
+        help=(
+            "Directory containing preloaded components (pt.pkl optional), "
+            "csp.json, classifier.joblib"
+        ),
     )
     preload_group.add_argument(
         "--no-preload",
@@ -219,32 +221,76 @@ def create_parser() -> argparse.ArgumentParser:
     # -------------------------
     train_parser = subparsers.add_parser(
         "train",
-        help="Train PT/CSP/SVC models from a dataset and save to models directory",
+        help=(
+            "Train PT/CSP/SVC models from a dataset and save to models directory"
+        ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     train_parser.add_argument(
-        "--raw-data-dir",
+        "--calibrated-array-path",
         type=str,
-        default="data/raw-dataset-2",
-        help="Path to raw data directory with per-subject subfolders (Task.json, data.xdf)",
+        default="data/calibrated.npy",
+        # help=(
+        #     "Path to raw data directory with per-subject subfolders "
+        #     "(Task.json, data.xdf)"
+        # ),
+    )
+    # train_parser.add_argument(
+    #     "--save-calibrated",
+    #     action="save_calibrated",
+    # )
+    # train_parser.add_argument(
+    #     "--use-calibrated",
+    #     action="use_calibrated"
+    # )
+    train_parser.add_argument(
+        "--sessions-root",
+        type=str,
+        default="data",
+        help=(
+            "Root directory with per-session subfolders; each subfolder name is the session_id"
+            ", containing data.xdf with EEG and Events streams"
+        ),
+    )
+    train_parser.add_argument(
+        "--sessions-dirs",
+        nargs="+",
+        type=str,
+        default=None,
+        help=(
+            "Explicit list of session directories to use (each must contain data.xdf). "
+            "If provided, overrides --sessions-root scanning."
+        ),
     )
     train_parser.add_argument(
         "--output-dir",
         type=str,
         default="models",
-        help="Directory to save trained components: pt.joblib, csp.json, classifier.joblib",
+        help=(
+            "Directory to save trained components: pt.joblib, csp.json, "
+            "classifier.joblib"
+        ),
     )
     train_parser.add_argument(
         "--exclude-label",
         type=int,
         default=2,
-        help="Exclude samples with this label from training (set to -1 to disable)",
+        help=(
+            "Exclude samples with this label from training (set to -1 to disable)"
+        ),
     )
     train_parser.add_argument(
         "--pipeline-config",
         type=str,
         default="configs/pipeline_config.yaml",
         help="Path to YAML pipeline configuration for training",
+    )
+    # Accept state-config after the 'train' subcommand too (not only as a global arg)
+    train_parser.add_argument(
+        "--state-config",
+        type=str,
+        default="configs/states/state_config.yaml",
+        help="Path to YAML state machine configuration",
     )
 
     return parser
@@ -283,388 +329,70 @@ def parse_args(args=None) -> argparse.Namespace:
     return parsed_args
 
 
-def _load_pretrained_components(preload_dir: str) -> dict:
-    """Load pre-trained PT (optional), CSP and SVC classifier from disk."""
-    components = {}
-
-    for fname in ("pt.pkl", "pt.joblib"):
-        path = os.path.join(preload_dir, fname)
-        if os.path.exists(path):
-            try:
-                components["pt"] = joblib_load(path)
-                logging.info(f"Loaded PT from {path}")
-            except (ValueError, EOFError, ImportError, AttributeError) as e:
-                logging.warning(f"Failed to load PT from {path}: {e}")
-            break
-
-    for fname in ("csp.pkl", "csp.joblib"):
-        path = os.path.join(preload_dir, fname)
-        if os.path.exists(path):
-            try:
-                components["csp"] = joblib_load(path)
-                logging.info(f"Loaded CSP from {path}")
-            except (ValueError, EOFError, ImportError, AttributeError) as e:
-                logging.warning(f"Failed to load CSP from {path}: {e}")
-            break
-    else:
-        csp_json = os.path.join(preload_dir, "csp.json")
-        if os.path.exists(csp_json):
-            from brainbuilding.core.transformers import StructuredCSP
-
-            try:
-                import json
-
-                with open(csp_json, "r") as f:
-                    state = json.load(f)
-                filters = np.array(state.get("filters", []), dtype=float)
-                patterns = np.array(state.get("patterns", []), dtype=float)
-                n_components = int(state.get("n_components", filters.shape[0]))
-                csp = StructuredCSP(
-                    field="sample", nfilter=n_components, log=False
-                )
-                # Restore learned parameters
-                csp.filters_ = filters
-                csp.patterns_ = patterns
-                components["csp"] = csp
-                logging.info(f"Loaded CSP from {csp_json} (JSON)")
-            except (OSError, ValueError) as e:
-                logging.warning(f"Failed to load CSP from JSON {csp_json}: {e}")
-
-    clf_path = os.path.join(preload_dir, "classifier.joblib")
-    if os.path.exists(clf_path):
-        try:
-            components["classifier"] = joblib_load(clf_path)
-            logging.info(f"Loaded classifier from {clf_path}")
-        except (ValueError, EOFError, ImportError, AttributeError) as e:
-            logging.warning(f"Failed to load classifier from {clf_path}: {e}")
-
-    return components
-
-
-def _create_training_steps():
-    """Create pipeline steps matching the evaluation PT pipeline.
-
-    This sequence yields PT→CSP→SVC on top of whitening, background filtering,
-    and covariance estimation so that the exported components align with
-    what the realtime service expects to preload (pt, csp, classifier).
-    """
-    return (
-        WHITENING
-        + BACKGROUND_FILTER
-        + AUGMENTED_OAS_COV
-        + PT_CSP_LOG
-        + SVC_CLASSIFICATION
-    )
-
-
-def _export_csp_to_json(csp, out_path: str) -> None:
-    """Export a fitted CSP to JSON (filters, patterns, n_components)."""
-    try:
-        import json
-
-        state = {
-            "filters": np.asarray(
-                getattr(csp, "filters_", []), dtype=float
-            ).tolist(),
-            "patterns": np.asarray(
-                getattr(csp, "patterns_", []), dtype=float
-            ).tolist(),
-            "n_components": int(getattr(csp, "nfilter", 0)),
-        }
-        with open(out_path, "w") as f:
-            json.dump(state, f)
-    except Exception as e:
-        logging.warning(f"Failed to export CSP to JSON at {out_path}: {e}")
-
-
-def _train_and_save_models(
-    dataset_path: str, output_dir: str, exclude_label: int = 2
-) -> None:
-    """Train PT/CSP/SVC from a structured dataset and persist artifacts.
-
-    Expected dataset dtype fields: 'sample', 'label', 'subject_id', 'is_background', 'event_id'.
-    """
-    logging.info(f"Loading dataset from {dataset_path}")
-    if not os.path.exists(dataset_path):
-        raise FileNotFoundError(f"Dataset not found: {dataset_path}")
-
-    data = np.load(dataset_path, allow_pickle=True)
-    X = data
-    y = data["label"]
-
-    if exclude_label >= 0:
-        mask = y != exclude_label
-        X = X[mask]
-        y = y[mask]
-        logging.info(
-            f"Excluded label {exclude_label}: remaining samples={len(y)}"
-        )
-
-    steps = _create_training_steps()
-    pipeline = OnlinePipeline(steps)
-
-    logging.info(
-        "Fitting training pipeline (whitening → cov → PT → CSP → SVC)..."
-    )
-    pipeline.fit(X, y)
-
-    # Extract fitted components
-    pt = pipeline.named_steps.get("pt")
-    csp = pipeline.named_steps.get("csp")
-    clf = pipeline.named_steps.get("svc")
-
-    if pt is None or csp is None or clf is None:
-        raise RuntimeError(
-            "Training pipeline did not produce required components (pt, csp, svc)"
-        )
-
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Save PT
-    pt_path = os.path.join(output_dir, "pt.joblib")
-    joblib_dump(pt, pt_path)
-    logging.info(f"Saved PT to {pt_path}")
-
-    # Save CSP (both joblib and JSON for compatibility with realtime loader)
-    csp_joblib_path = os.path.join(output_dir, "csp.joblib")
-    joblib_dump(csp, csp_joblib_path)
-    logging.info(f"Saved CSP to {csp_joblib_path}")
-
-    csp_json_path = os.path.join(output_dir, "csp.json")
-    _export_csp_to_json(csp, csp_json_path)
-    logging.info(f"Saved CSP JSON to {csp_json_path}")
-
-    # Save classifier
-    clf_path = os.path.join(output_dir, "classifier.joblib")
-    joblib_dump(clf, clf_path)
-    logging.info(f"Saved classifier to {clf_path}")
-
-
-def _load_subject_raw(raw_dir: str, subject_id: int):
-    """Load MNE Raw for a subject using pyneurostim."""
-    try:
-        import pyneurostim as ns
-    except Exception as e:
-        raise RuntimeError(
-            "pyneurostim and mne are required for raw-data training"
-        ) from e
-
-    task_file = os.path.join(raw_dir, str(subject_id), "Task.json")
-    xdf_file = os.path.join(raw_dir, str(subject_id), "data.xdf")
-    if not (os.path.exists(task_file) and os.path.exists(xdf_file)):
-        raise FileNotFoundError(
-            f"Missing Task.json or data.xdf for subject {subject_id} in {raw_dir}"
-        )
-
-    from brainbuilding.core.config import (
-        DEFAULT_EEG_STREAM_NAMES,
-        DEFAULT_EVENT_STREAM_NAME,
-    )
-
-    protocol = ns.io.NeuroStim(
-        task_file=task_file,
-        xdf_file=xdf_file,
-        event_stream_name=DEFAULT_EVENT_STREAM_NAME,
-    )
-    raw, _ = protocol.raw_xdf(
-        annotation=True,
-        eeg_stream_names=list(DEFAULT_EEG_STREAM_NAMES),
-        extended_annotation=True,
-    )
-    return raw
-
-
-def _prepare_raw_channels(raw):
-    """Adjust channels to standard names used in config (drop dup, rename)."""
-    try:
-        raw.drop_channels(["Fp1-1"], on_missing="ignore")  # type: ignore[attr-defined]
-    except Exception:
-        pass
-    try:
-        raw.rename_channels({"Fp1-0": "Fp1"})  # type: ignore[attr-defined]
-    except Exception:
-        pass
-    return raw
-
-
-def _preprocess_continuous_online_like(raw):
-    """Apply reference subtraction, scaling, channel selection, and bandpass filtering."""
-    import numpy as _np
-    from brainbuilding.core.config import (
-        CHANNELS_IN_STREAM,
-        REF_CHANNEL_IND,
-        CHANNELS_MASK,
-    )
-    from brainbuilding.service.signal import OnlineSignalFilter
-
-    data = raw.get_data()
-    sfreq = raw.info["sfreq"]
-
-    # Map configured stream channel order to indices in raw
-    ch_name_to_idx = {ch: i for i, ch in enumerate(raw.info["ch_names"])}
-    try:
-        indices = _np.array([ch_name_to_idx[ch] for ch in CHANNELS_IN_STREAM])
-    except KeyError as e:
-        missing = [ch for ch in CHANNELS_IN_STREAM if ch not in ch_name_to_idx]
-        raise RuntimeError(
-            f"Missing required channels in raw: {missing}"
-        ) from e
-
-    stream_data = data[indices]  # shape: (len(CHANNELS_IN_STREAM), n_times)
-    # Reference subtract Fz
-    referenced = (
-        stream_data - stream_data[REF_CHANNEL_IND : REF_CHANNEL_IND + 1]
-    )
-    # Convert µV to V
-    scaled = referenced / 1_000_000
-    # Keep required channels
-    selected = scaled[CHANNELS_MASK]
-
-    # Stateful bandpass filter
-    filt = OnlineSignalFilter(sfreq=sfreq, n_channels=selected.shape[0])
-    filtered_samples = []
-    for i in range(selected.shape[1]):
-        filtered_samples.append(filt.process_sample(selected[:, i]))
-    processed = _np.array(filtered_samples).T  # (n_channels_keep, n_times)
-    return processed, sfreq
-
-
-def _extract_epochs_from_raw(raw, subject_id: int):
-    """Create sliding-window epochs and labels from MNE Raw annotations."""
-    import numpy as _np
-    import mne  # type: ignore
-    from brainbuilding.core.config import (
-        STANDARD_EVENT_NAME_TO_ID_MAPPING,
-        BACKGROUND_CLASS_INDEX,
-        IMAGERY_CLASS_INDEX,
-    )
-
-    # Preprocess continuous data
-    processed, sfreq = _preprocess_continuous_online_like(raw)
-
-    events, event_ids = mne.events_from_annotations(raw, verbose=False)
-    events_reprocessed = []
-    for event in events:
-        ts_i, _, e = event
-        descriptions = [k for k, v in event_ids.items() if v == e]
-        desc = descriptions[0] if descriptions else ""
-        label_vec = STANDARD_EVENT_NAME_TO_ID_MAPPING(desc.split("#")[0])
-        if label_vec == []:
-            continue
-        events_reprocessed.append((ts_i, 1.0, label_vec))
-
-    # Sliding windows
-    sample_delay = int(1.0 * sfreq)
-    sample_window = int(3.0 * sfreq)
-    sample_step = int(3.0 * sfreq)
-
-    epochs_data = []
-    labels = []
-    is_background = []
-    for ind, (ts_idx, _vas, event_id) in enumerate(events_reprocessed[:-1]):
-        if event_id == []:
-            continue
-        start_idx = ts_idx + sample_delay
-        # find next different event
-        next_events = [
-            i
-            for i in events_reprocessed[ind + 1 :]
-            if tuple(i[2]) != tuple(event_id)
-        ]
-        if not next_events:
-            continue
-        end_idx = next_events[0][0]
-
-        chunk_start = start_idx
-        chunk_end = chunk_start + sample_window
-        while chunk_end <= end_idx and (chunk_end <= processed.shape[1]):
-            chunk = processed[:, chunk_start:chunk_end]
-            epochs_data.append(chunk)
-            labels.append(event_id)
-            is_background.append(int(event_id[BACKGROUND_CLASS_INDEX] == 1))
-            chunk_start = chunk_start + sample_step
-            chunk_end = chunk_start + sample_window
-
-    X = _np.array(epochs_data)
-    y = _np.array(labels)[:, IMAGERY_CLASS_INDEX]
-    is_background_arr = _np.array(is_background)
-    subject_ids_arr = _np.full(len(y), subject_id, dtype=_np.int64)
-
-    # Build structured array expected by pipeline
-    dtype = [
-        ("sample", _np.float64, X.shape[1:]),
-        ("label", _np.int64),
-        ("subject_id", _np.int64),
-        ("is_background", _np.bool_),
-        ("event_id", _np.uint64),
-    ]
-    data = _np.zeros(len(X), dtype=dtype)
-    data["sample"] = X
-    data["label"] = y
-    data["subject_id"] = subject_ids_arr
-    data["is_background"] = is_background_arr
-    # simple unique ids
-    data["event_id"] = _np.arange(len(X), dtype=_np.uint64)
-    return data
-
-
-def _build_dataset_from_raw_dir(raw_dir: str):
-    """Load all subject folders under raw_dir and build a single structured array."""
-    import numpy as _np
-
-    subject_dirs = [d for d in os.listdir(raw_dir) if d.isdigit()]
-    subject_ids = sorted([int(s) for s in subject_dirs])
-    samples_session_ids = []
-    all_data = []
-    for sid in subject_ids:
-        raw = _load_subject_raw(raw_dir, sid)
-        raw = _prepare_raw_channels(raw)
-        raw.resample(250, npad="auto")  # match DEFAULT_SFREQ
-        subject_data = _extract_epochs_from_raw(raw, sid)
-        samples_session_ids.extend([sid] * len(subject_data))
-        if len(subject_data) > 0:
-            all_data.append(subject_data)
-
-    if not all_data:
-        raise RuntimeError(f"No valid data found under {raw_dir}")
-
-    data = _np.concatenate(all_data)
-    X = data
-    y = data["label"]
-    X['session_id'] = samples_session_ids
-    return X, y
-
-
 # TODO: getattr for commands? refactor this
 def main(argv=None):
     args = parse_args(argv)
+    args.save_calibrated = True
+    args.use_calibrated = False
 
     # If running training subcommand, use its own minimal logging setup
     if getattr(args, "command", None) == "train":
         setup_logging("INFO", None)
-        # Always build from raw-data-dir
-        X, y = _build_dataset_from_raw_dir(args.raw_data_dir)
-        pipeline = build_training_pipeline_from_yaml(args.pipeline_config)
-        logging.info(
-            "Fitting training pipeline (whitening → cov → PT → CSP → SVC) from raw data..."
-        )
-        pipeline.fit(X, y)
+        pipeline_config, _ = load_pipeline_from_yaml(args.pipeline_config)
+        if not args.use_calibrated:
+            from brainbuilding.service.eeg_service import EEGOfflineRunner
 
-        # Extract fitted components and save
-        pt = pipeline.named_steps.get("pt")
-        csp = pipeline.named_steps.get("csp")
-        clf = pipeline.named_steps.get("svc")
-        if pt is None or csp is None or clf is None:
-            raise RuntimeError(
-                "Training pipeline did not produce required components (pt, csp, svc)"
-            )
+            if args.sessions_dirs:
+                session_dirs = [d for d in args.sessions_dirs if os.path.isdir(d)]
+            else:
+                session_dirs = [
+                    os.path.join(args.sessions_root, d)
+                    for d in os.listdir(args.sessions_root)
+                    if os.path.isdir(os.path.join(args.sessions_root, d))
+                ]
+
+            all_rows = []
+            for sess_dir in sorted(session_dirs):
+                sess_id = os.path.basename(sess_dir)
+                xdf_path = os.path.join(sess_dir, "data.xdf")
+                if not os.path.exists(xdf_path):
+                    print(f"Skipping {xdf_path} because it does not exist")
+                    continue
+                logging.info("Loading %s", xdf_path)
+                runner = EEGOfflineRunner(
+                    pipeline_config=pipeline_config,
+                    state_config_path=getattr(
+                        args, "state_config", "configs/states/state_config.yaml"
+                    ),
+                )
+                rows = runner.run_from_xdf(xdf_path, session_id=sess_id)
+                # logging.info(f"{rows[0]['sample'].shape=}")
+                all_rows.extend(rows)
+    
+            data = np.concatenate(all_rows)
+
+            if args.save_calibrated:
+                np.save(args.calibrated_array_path, data)
+            all_rows = data
+        else:
+            all_rows = np.load(args.calibrated_array_path)
+        
+        logging.info(f"{all_rows.shape=}")
+        logging.info(f"{all_rows['sample'].shape=}")
+
+        # Prepare arrays (no assumptions about pipeline content)
+        y = all_rows['label']
+
+        # Train strictly by YAML (non-calibration steps only)
+        training_cfg = pipeline_config.training_only_config()
+        fitted = training_cfg.fit_training(all_rows, y)
 
         os.makedirs(args.output_dir, exist_ok=True)
-        joblib_dump(pt, os.path.join(args.output_dir, "pt.joblib"))
-        joblib_dump(csp, os.path.join(args.output_dir, "csp.joblib"))
-        _export_csp_to_json(csp, os.path.join(args.output_dir, "csp.json"))
-        joblib_dump(clf, os.path.join(args.output_dir, "classifier.joblib"))
-        logging.info(f"Saved models to {args.output_dir}")
+        # Save all fitted components generically
+        for name, comp in fitted.items():
+            outp = os.path.join(args.output_dir, f"{name}.joblib")
+            joblib_dump(comp, outp)
+        logging.info("Saved %d components to %s", len(fitted), args.output_dir)
         return
 
     # Default: serve realtime processor
