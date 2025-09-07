@@ -10,29 +10,14 @@ from pyriemann.utils.base import invsqrtm  # type: ignore
 from pyriemann.spatialfilters import CSP
 
 from brainbuilding.core.config import PICK_CHANNELS
-from sklearn.decomposition import FastICA  # type: ignore
+from sklearn.decomposition import FastICA
+
+from brainbuilding.core.utils import happend  # type: ignore
 from ..train.context import _IN_PREDICTION_PHASE
 from pyriemann.utils.tangentspace import upper, unupper  # type: ignore
 from functools import partial
 from sklearn.neighbors import KNeighborsClassifier  # type: ignore
-
-
-def happend(x, col_data, col_name: str):
-    if not x.dtype.fields:
-        # Not a structured array
-        return None
-    # 0) create new structured array
-    old_dtype = [i for i in x.dtype.descr if i[0] != col_name and i[0] != ""]
-    y = np.empty(
-        x.shape,
-        dtype=old_dtype + [(col_name, col_data.dtype, col_data.shape[1:])],
-    )
-    for name in [i[0] for i in old_dtype]:
-        # 1) copy old array
-        y[name] = x[name]
-
-    y[col_name] = col_data
-    return y
+from sklearn.svm import SVC  # type: ignore
 
 
 # @njit(nopython=True)
@@ -373,7 +358,7 @@ class ParallelTransportTransformer(BaseEstimator, TransformerMixin):
                 general_means[i] = self.general_mean_
 
             if (
-                self.subject_counts_.get(int(subject), 0)
+                self.subject_counts_.get(subject, 0)
                 < self.subject_min_samples_for_transform
             ):
                 raise ValueError(
@@ -1117,3 +1102,25 @@ class EyeRemoval(BaseEstimator, TransformerMixin):
         heog = f8 - f7
 
         return veog, heog
+
+
+class CustomSVC(SVC):  # type: ignore[misc]
+    """SVC subclass with a convenience method returning
+    [[predicted_label, predicted_probability]].
+    """
+
+    def predict_label_and_confidence(self, data: np.ndarray) -> np.ndarray:
+        proba = self.predict_proba(data)
+        if proba.ndim == 2 and proba.shape[0] >= 1:
+            pred_idx = int(np.argmax(proba[0]))
+            pred = (
+                self.classes_[pred_idx]
+                if hasattr(self, "classes_")
+                else pred_idx
+            )
+            conf = float(np.max(proba[0]))
+            return np.array([[pred, conf]])
+
+        pred_arr = self.predict(data)
+        pred = int(pred_arr[0]) if hasattr(pred_arr, "__len__") else int(pred_arr)
+        return np.array([[pred, 1.0]])
