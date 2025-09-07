@@ -34,6 +34,7 @@ dependencies = [
     "pydantic>=2.0.0",
     "PyYAML>=6.0.1",
     "joblib>=1.3.0",
+    "typer>=0.12.0",
 ]
 
 [project.optional-dependencies]
@@ -60,6 +61,7 @@ line-length = 79
 extend-exclude = [
     "build",
     "data",
+    "scripts",
 ]
 
 [tool.ruff.format]

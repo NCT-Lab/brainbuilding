@@ -1,10 +1,18 @@
 """
 Command-line interface for the brainbuilding real-time EEG processor.
+
+Refactored to a strictly-typed, declarative Typer app with explicit
+subcommand handlers and Pydantic option models.
 """
 
-import argparse
 import logging
-from typing import Optional
+import os
+from typing import List, Optional
+
+import numpy as np
+import typer  # type: ignore
+from joblib import dump as joblib_dump  # type: ignore
+from pydantic import BaseModel, Field
 
 from brainbuilding.core.config import (
     CHANNELS_IN_STREAM,
@@ -22,15 +30,10 @@ from brainbuilding.core.config import (
     REFERENCE_CHANNEL,
     EEGProcessingConfig,
 )
-from joblib import dump as joblib_dump  # type: ignore
-import numpy as np
-import os
-
 from brainbuilding.service.pipeline import load_pipeline_from_yaml
 
 
-def setup_logging(log_level: str = "INFO", log_file: Optional[str] = None):
-    """Setup logging configuration"""
+def setup_logging(log_level: str = "INFO", log_file: Optional[str] = None) -> None:
     numeric_level = getattr(logging, log_level.upper(), None)
     if not isinstance(numeric_level, int):
         raise ValueError(f"Invalid log level: {log_level}")
@@ -52,363 +55,155 @@ def setup_logging(log_level: str = "INFO", log_file: Optional[str] = None):
         logging.getLogger().addHandler(file_handler)
 
 
-def create_parser() -> argparse.ArgumentParser:
-    """Create argument parser with idiomatic arguments"""
-    parser = argparse.ArgumentParser(
-        prog="brainbuilding-realtime",
-        description="Real-time EEG processing for brain-computer interfaces",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
+class ServeOptions(BaseModel):
+    # Stream configuration
+    eeg_stream_name: str = DEFAULT_EEG_STREAM_NAME
+    event_stream_name: str = DEFAULT_EVENT_STREAM_NAME
 
-    # Subcommands: default (serve) and train
-    subparsers = parser.add_subparsers(dest="command")
+    # Channel configuration
+    channels: List[str] = Field(
+        default_factory=lambda: list(CHANNELS_IN_STREAM)
+    )
+    channels_to_keep: List[str] = Field(
+        default_factory=lambda: list(CHANNELS_TO_KEEP)
+    )
+    reference_channel: str = REFERENCE_CHANNEL
 
-    # -------------------------
-    # Serve subcommand (default)
-    # -------------------------
-    stream_group = parser.add_argument_group("Stream Configuration")
-    stream_group.add_argument(
-        "--eeg-stream",
-        dest="eeg_stream_name",
-        default=DEFAULT_EEG_STREAM_NAME,
-        help="Name of the EEG LSL stream",
-    )
-    stream_group.add_argument(
-        "--event-stream",
-        dest="event_stream_name",
-        default=DEFAULT_EVENT_STREAM_NAME,
-        help="Name of the event LSL stream",
-    )
-
-    channel_group = parser.add_argument_group("Channel Configuration")
-    channel_group.add_argument(
-        "--channels",
-        nargs="+",
-        default=list(CHANNELS_IN_STREAM),
-        help="List of available channels in the stream",
-    )
-    channel_group.add_argument(
-        "--channels-to-keep",
-        nargs="+",
-        default=list(CHANNELS_TO_KEEP),
-        help="List of channels to keep for processing",
-    )
-    channel_group.add_argument(
-        "--reference-channel",
-        default=REFERENCE_CHANNEL,
-        help="Reference channel for re-referencing",
-    )
-
-    processing_group = parser.add_argument_group("Processing Parameters")
-    processing_group.add_argument(
-        "--window-size",
-        dest="processing_window_size",
-        type=int,
-        default=DEFAULT_PROCESSING_WINDOW_SIZE,
-        help="Window size in samples for classification",
-    )
-    processing_group.add_argument(
-        "--processing-step",
-        type=int,
-        default=DEFAULT_PROCESSING_STEP,
-        help="Step size in samples between classifications",
-    )
-    processing_group.add_argument(
-        "--sfreq",
-        type=float,
-        default=DEFAULT_SFREQ,
-        help="Sampling frequency in Hz",
-    )
-    processing_group.add_argument(
-        "--session-id",
-        type=str,
-        default=None,
-        help="Session identifier (online run)",
-    )
-    processing_group.add_argument(
-        "--scale-factor",
-        type=float,
-        default=DEFAULT_SCALE_FACTOR,
-        help="Scale factor for unit conversion (default: µV to V)",
-    )
+    # Processing parameters
+    processing_window_size: int = DEFAULT_PROCESSING_WINDOW_SIZE
+    processing_step: int = DEFAULT_PROCESSING_STEP
+    sfreq: float = DEFAULT_SFREQ
+    session_id: Optional[str] = None
+    scale_factor: float = DEFAULT_SCALE_FACTOR
 
     # TCP configuration
-    tcp_group = parser.add_argument_group("TCP Configuration")
-    tcp_group.add_argument(
-        "--tcp-host",
-        default=DEFAULT_TCP_HOST,
-        help="TCP host for sending results",
-    )
-    tcp_group.add_argument(
-        "--tcp-port",
-        type=int,
-        default=DEFAULT_TCP_PORT,
-        help="TCP port for sending results",
-    )
-    tcp_group.add_argument(
-        "--tcp-retries",
-        type=int,
-        default=DEFAULT_TCP_RETRIES,
-        help="Maximum number of TCP connection retries",
-    )
+    tcp_host: str = DEFAULT_TCP_HOST
+    tcp_port: int = DEFAULT_TCP_PORT
+    tcp_retries: int = DEFAULT_TCP_RETRIES
 
     # File paths
-    file_group = parser.add_argument_group("File Paths")
-    file_group.add_argument(
-        "--pipeline-config",
-        type=str,
-        default="configs/pipeline_config.yaml",
-        help="Path to YAML pipeline configuration",
-    )
-    file_group.add_argument(
-        "--history-path",
-        type=str,
-        default=DEFAULT_HISTORY_PATH,
-        help="Path to save processing history",
-    )
-    file_group.add_argument(
-        "--state-config",
-        type=str,
-        default="state_config_example.yaml",
-        help="Path to YAML state machine configuration",
-    )
+    pipeline_config: str = "configs/pipeline_config.yaml"
+    history_path: str = DEFAULT_HISTORY_PATH
+    state_config: Optional[str] = "configs/states/state_config.yaml"
 
     # Logging
-    logging_group = parser.add_argument_group("Logging")
-    logging_group.add_argument(
-        "--log-level",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        default="INFO",
-        help="Logging level",
-    )
-    logging_group.add_argument(
-        "--log-file", type=str, help="Path to log file (default: console only)"
-    )
+    log_level: str = "INFO"
+    log_file: Optional[str] = None
+    debug: bool = False
 
-    # Preload models
-    preload_group = parser.add_argument_group("Model Preloading")
-    preload_group.add_argument(
-        "--preload-dir",
-        type=str,
-        default="models",
-        help=("Directory containing preloaded components named step.joblib"),
-    )
-    preload_group.add_argument(
-        "--no-preload",
-        action="store_true",
-        help="Disable preloading of PT/CSP/SVC components",
-    )
-    logging_group.add_argument(
-        "--debug",
-        action="store_true",
-        help="Enable debug logging",
-    )
-
-    # -------------------------
-    # Train subcommand
-    # -------------------------
-    train_parser = subparsers.add_parser(
-        "train",
-        help=(
-            "Train PT/CSP/SVC models from a dataset and save to models directory"
-        ),
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    train_parser.add_argument(
-        "--calibrated-array-path",
-        type=str,
-        default="data/calibrated.npy",
-        # help=(
-        #     "Path to raw data directory with per-subject subfolders "
-        #     "(Task.json, data.xdf)"
-        # ),
-    )
-    # train_parser.add_argument(
-    #     "--save-calibrated",
-    #     action="save_calibrated",
-    # )
-    # train_parser.add_argument(
-    #     "--use-calibrated",
-    #     action="use_calibrated"
-    # )
-    train_parser.add_argument(
-        "--sessions-root",
-        type=str,
-        default="data",
-        help=(
-            "Root directory with per-session subfolders; each subfolder name is the session_id"
-            ", containing data.xdf with EEG and Events streams"
-        ),
-    )
-    train_parser.add_argument(
-        "--sessions-dirs",
-        nargs="+",
-        type=str,
-        default=None,
-        help=(
-            "Explicit list of session directories to use (each must contain data.xdf). "
-            "If provided, overrides --sessions-root scanning."
-        ),
-    )
-    train_parser.add_argument(
-        "--output-dir",
-        type=str,
-        default="models",
-        help=(
-            "Directory to save trained components: pt.joblib, csp.json, "
-            "classifier.joblib"
-        ),
-    )
-    train_parser.add_argument(
-        "--exclude-label",
-        type=int,
-        default=2,
-        help=(
-            "Exclude samples with this label from training (set to -1 to disable)"
-        ),
-    )
-    train_parser.add_argument(
-        "--pipeline-config",
-        type=str,
-        default="configs/pipeline_config.yaml",
-        help="Path to YAML pipeline configuration for training",
-    )
-    # Accept state-config after the 'train' subcommand too (not only as a global arg)
-    train_parser.add_argument(
-        "--state-config",
-        type=str,
-        default="configs/states/state_config.yaml",
-        help="Path to YAML state machine configuration",
-    )
-
-    return parser
+    # Preloading
+    preload_dir: str = "models"
+    no_preload: bool = False
 
 
-def args_to_config(args: argparse.Namespace) -> EEGProcessingConfig:
-    """Convert parsed arguments to configuration object"""
+class TrainOptions(BaseModel):
+    calibrated_array_path: str = "data/calibrated.npy"
+    save_calibrated: bool = True
+    use_calibrated: bool = False
+
+    sessions_root: str = "data"
+    sessions_dirs: Optional[List[str]] = None
+    output_dir: str = "models"
+    exclude_label: int = 2
+
+    pipeline_config: str = "configs/pipeline_config.yaml"
+    state_config: str = "configs/states/state_config.yaml"
+
+    preload_dir: str = "models"
+    no_preload: bool = False
+
+
+def options_to_processing_config(opts: ServeOptions) -> EEGProcessingConfig:
     return EEGProcessingConfig(
-        # Channel configuration
-        channels=args.channels,
-        reference_channel=args.reference_channel,
-        # Processing parameters
-        processing_window_size=args.processing_window_size,
-        processing_step=args.processing_step,
-        sfreq=args.sfreq,
-        # Stream configuration
-        eeg_stream_name=args.eeg_stream_name,
-        event_stream_name=args.event_stream_name,
-        # TCP configuration
-        tcp_host=args.tcp_host,
-        tcp_port=args.tcp_port,
-        tcp_retries=args.tcp_retries,
-        # File paths
-        pipeline_path=args.pipeline_config,
-        history_path=args.history_path,
-        # Misc
-        scale_factor=args.scale_factor,
-        debug=args.debug,
+        channels=opts.channels,
+        reference_channel=opts.reference_channel,
+        processing_window_size=opts.processing_window_size,
+        processing_step=opts.processing_step,
+        sfreq=opts.sfreq,
+        eeg_stream_name=opts.eeg_stream_name,
+        event_stream_name=opts.event_stream_name,
+        tcp_host=opts.tcp_host,
+        tcp_port=opts.tcp_port,
+        tcp_retries=opts.tcp_retries,
+        pipeline_path=opts.pipeline_config,
+        history_path=opts.history_path,
+        scale_factor=opts.scale_factor,
+        debug=opts.debug,
     )
 
 
-def parse_args(args=None) -> argparse.Namespace:
-    """Parse command line arguments"""
-    parser = create_parser()
-    parsed_args = parser.parse_args(args)
-    return parsed_args
+app = typer.Typer(help="Real-time EEG processing for brain-computer interfaces")
 
 
-# TODO: getattr for commands? refactor this
-def main(argv=None):
-    args = parse_args(argv)
-    args.save_calibrated = True
-    args.use_calibrated = False
+@app.command("serve")
+def serve(
+    eeg_stream_name: str = typer.Option(DEFAULT_EEG_STREAM_NAME, help="EEG LSL stream name"),
+    event_stream_name: str = typer.Option(DEFAULT_EVENT_STREAM_NAME, help="Event LSL stream name"),
+    channels: List[str] = typer.Option(list(CHANNELS_IN_STREAM), help="Channels in stream"),
+    channels_to_keep: List[str] = typer.Option(list(CHANNELS_TO_KEEP), help="Channels to keep for processing"),
+    reference_channel: str = typer.Option(REFERENCE_CHANNEL, help="Reference channel name"),
+    processing_window_size: int = typer.Option(DEFAULT_PROCESSING_WINDOW_SIZE, help="Window size (samples)"),
+    processing_step: int = typer.Option(DEFAULT_PROCESSING_STEP, help="Step size (samples)"),
+    sfreq: float = typer.Option(DEFAULT_SFREQ, help="Sampling frequency (Hz)"),
+    session_id: Optional[str] = typer.Option(None, help="Session identifier"),
+    scale_factor: float = typer.Option(DEFAULT_SCALE_FACTOR, help="Scale factor for unit conversion"),
+    tcp_host: str = typer.Option(DEFAULT_TCP_HOST, help="TCP host for results"),
+    tcp_port: int = typer.Option(DEFAULT_TCP_PORT, help="TCP port"),
+    tcp_retries: int = typer.Option(DEFAULT_TCP_RETRIES, help="Max TCP retries"),
+    pipeline_config_path: str = typer.Option("configs/pipeline_config.yaml", help="Pipeline YAML path"),
+    history_path: str = typer.Option(DEFAULT_HISTORY_PATH, help="History output path"),
+    state_config_path: Optional[str] = typer.Option("configs/states/state_config.yaml", help="State machine YAML path"),
+    preload_dir: str = typer.Option("models", help="Preload directory for components"),
+    no_preload: bool = typer.Option(False, help="Disable preloading components"),
+    log_level: str = typer.Option("INFO", help="Logging level"),
+    log_file: Optional[str] = typer.Option(None, help="Log file path"),
+    debug: bool = typer.Option(False, help="Enable debug logging"),
+) -> None:
+    opts = ServeOptions(
+        eeg_stream_name=eeg_stream_name,
+        event_stream_name=event_stream_name,
+        channels=channels,
+        channels_to_keep=channels_to_keep,
+        reference_channel=reference_channel,
+        processing_window_size=processing_window_size,
+        processing_step=processing_step,
+        sfreq=sfreq,
+        session_id=session_id,
+        scale_factor=scale_factor,
+        tcp_host=tcp_host,
+        tcp_port=tcp_port,
+        tcp_retries=tcp_retries,
+        pipeline_config=pipeline_config_path,
+        history_path=history_path,
+        state_config=state_config_path,
+        preload_dir=preload_dir,
+        no_preload=no_preload,
+        log_level=log_level,
+        log_file=log_file,
+        debug=debug,
+    )
 
-    # If running training subcommand, use its own minimal logging setup
-    if getattr(args, "command", None) == "train":
-        setup_logging("INFO", None)
-        pipeline_config, _ = load_pipeline_from_yaml(
-            args.pipeline_config,
-            preload_dir=(None if args.no_preload else args.preload_dir),
-            enable_preload=not args.no_preload,
-        )
-        if not args.use_calibrated:
-            from brainbuilding.service.eeg_service import EEGOfflineRunner
-
-            if args.sessions_dirs:
-                session_dirs = [d for d in args.sessions_dirs if os.path.isdir(d)]
-            else:
-                session_dirs = [
-                    os.path.join(args.sessions_root, d)
-                    for d in os.listdir(args.sessions_root)
-                    if os.path.isdir(os.path.join(args.sessions_root, d))
-                ]
-
-            all_rows = []
-            for sess_dir in sorted(session_dirs):
-                sess_id = os.path.basename(sess_dir)
-                xdf_path = os.path.join(sess_dir, "data.xdf")
-                if not os.path.exists(xdf_path):
-                    print(f"Skipping {xdf_path} because it does not exist")
-                    continue
-                logging.info("Loading %s", xdf_path)
-                runner = EEGOfflineRunner(
-                    pipeline_config=pipeline_config,
-                    state_config_path=getattr(
-                        args, "state_config", "configs/states/state_config.yaml"
-                    ),
-                )
-                rows = runner.run_from_xdf(xdf_path, session_id=sess_id)
-                # logging.info(f"{rows[0]['sample'].shape=}")
-                all_rows.extend(rows)
-    
-            data = np.concatenate(all_rows)
-
-            if args.save_calibrated:
-                np.save(args.calibrated_array_path, data)
-            all_rows = data
-        else:
-            all_rows = np.load(args.calibrated_array_path)
-        
-        logging.info(f"{all_rows.shape=}")
-        logging.info(f"{all_rows['sample'].shape=}")
-
-        # Prepare arrays (no assumptions about pipeline content)
-        y = all_rows['label']
-
-        # Train strictly by YAML (non-calibration steps only)
-        training_cfg = pipeline_config.training_only_config()
-        fitted = training_cfg.fit_training(all_rows, y)
-
-        os.makedirs(args.output_dir, exist_ok=True)
-        # Save all fitted components generically
-        for name, comp in fitted.items():
-            outp = os.path.join(args.output_dir, f"{name}.joblib")
-            joblib_dump(comp, outp)
-        logging.info("Saved %d components to %s", len(fitted), args.output_dir)
-        return
-
-    # Default: serve realtime processor
-    setup_logging(args.log_level, args.log_file)
-    if args.debug:
+    setup_logging(opts.log_level, opts.log_file)
+    if opts.debug:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    config = args_to_config(args)
+    config = options_to_processing_config(opts)
 
-    # Lazy import to avoid pylsl dependency during training
     from brainbuilding.service.eeg_service import EEGService
 
     pipeline_config, pretrained = load_pipeline_from_yaml(
-        args.pipeline_config,
-        preload_dir=(None if args.no_preload else args.preload_dir),
-        enable_preload=not args.no_preload,
+        opts.pipeline_config,
+        preload_dir=(None if opts.no_preload else opts.preload_dir),
+        enable_preload=not opts.no_preload,
     )
+
     service = EEGService(
         pipeline_config,
         tcp_host=config.tcp_host,
         tcp_port=config.tcp_port,
         tcp_retries=config.tcp_retries,
-        state_config_path=getattr(args, "state_config", None),
-        session_id=getattr(args, "session_id", None),
+        state_config_path=opts.state_config,
+        session_id=opts.session_id,
     )
 
     if pretrained:
@@ -428,6 +223,97 @@ def main(argv=None):
         pass
     finally:
         service.stop()
+
+
+@app.command("train")
+def train(
+    calibrated_array_path: str = typer.Option("data/calibrated.npy", help="Path to save/load calibrated array"),
+    save_calibrated: bool = typer.Option(True, help="Save calibrated array to disk"),
+    use_calibrated: bool = typer.Option(False, help="Use pre-saved calibrated array"),
+    sessions_root: str = typer.Option("data", help="Root directory containing session subfolders"),
+    sessions_dirs: Optional[List[str]] = typer.Option(None, help="Explicit list of session directories"),
+    output_dir: str = typer.Option("models", help="Output directory for trained components"),
+    exclude_label: int = typer.Option(2, help="Exclude samples with this label (-1 to disable)"),
+    pipeline_config_path: str = typer.Option("configs/pipeline_config.yaml", help="Pipeline YAML path for training"),
+    state_config_path: str = typer.Option("configs/states/state_config.yaml", help="State machine YAML path"),
+    preload_dir: str = typer.Option("models", help="Preload directory for components"),
+    no_preload: bool = typer.Option(False, help="Disable preloading components"),
+) -> None:
+    opts = TrainOptions(
+        calibrated_array_path=calibrated_array_path,
+        save_calibrated=save_calibrated,
+        use_calibrated=use_calibrated,
+        sessions_root=sessions_root,
+        sessions_dirs=sessions_dirs,
+        output_dir=output_dir,
+        exclude_label=exclude_label,
+        pipeline_config=pipeline_config_path,
+        state_config=state_config_path,
+        preload_dir=preload_dir,
+        no_preload=no_preload,
+    )
+
+    setup_logging("INFO", None)
+
+    pipeline_config, _ = load_pipeline_from_yaml(
+        opts.pipeline_config,
+        preload_dir=(None if opts.no_preload else opts.preload_dir),
+        enable_preload=not opts.no_preload,
+    )
+
+    if not opts.use_calibrated:
+        from brainbuilding.service.eeg_service import EEGOfflineRunner
+
+        if opts.sessions_dirs is not None and len(opts.sessions_dirs) > 0:
+            session_dirs = [d for d in opts.sessions_dirs if os.path.isdir(d)]
+        else:
+            session_dirs = [
+                os.path.join(opts.sessions_root, d)
+                for d in os.listdir(opts.sessions_root)
+                if os.path.isdir(os.path.join(opts.sessions_root, d))
+            ]
+
+        all_rows: List[np.ndarray] = []
+        for sess_dir in sorted(session_dirs):
+            sess_id = os.path.basename(sess_dir)
+            xdf_path = os.path.join(sess_dir, "data.xdf")
+            if not os.path.exists(xdf_path):
+                logging.info("Skipping %s because it does not exist", xdf_path)
+                continue
+            logging.info("Loading %s", xdf_path)
+            runner = EEGOfflineRunner(
+                pipeline_config=pipeline_config,
+                state_config_path=opts.state_config,
+            )
+            rows = runner.run_from_xdf(xdf_path, session_id=sess_id)
+            all_rows.extend(rows)
+
+        data = np.concatenate(all_rows) if len(all_rows) > 0 else np.array([])
+        if data.size == 0:
+            raise RuntimeError("No calibrated data produced from provided sessions")
+
+        if opts.save_calibrated:
+            np.save(opts.calibrated_array_path, data)
+        all_rows_arr = data
+    else:
+        all_rows_arr = np.load(opts.calibrated_array_path)
+
+    logging.info("%s", f"{all_rows_arr.shape=}")
+    logging.info("%s", f"{all_rows_arr['sample'].shape=}")
+
+    y = all_rows_arr["label"]
+    training_cfg = pipeline_config.training_only_config()
+    fitted = training_cfg.fit_training(all_rows_arr, y)
+
+    os.makedirs(opts.output_dir, exist_ok=True)
+    for name, comp in fitted.items():
+        outp = os.path.join(opts.output_dir, f"{name}.joblib")
+        joblib_dump(comp, outp)
+    logging.info("Saved %d components to %s", len(fitted), opts.output_dir)
+
+
+def main(argv: Optional[List[str]] = None) -> None:
+    app()
 
 
 if __name__ == "__main__":
