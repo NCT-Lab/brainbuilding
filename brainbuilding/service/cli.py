@@ -22,15 +22,6 @@ from brainbuilding.core.config import (
     REFERENCE_CHANNEL,
     EEGProcessingConfig,
 )
-from brainbuilding.train.pipelines import (
-    WHITENING,
-    BACKGROUND_FILTER,
-    AUGMENTED_OAS_COV,
-    PT_CSP_LOG,
-    SVC_CLASSIFICATION,
-    OnlinePipeline,
-)
-from joblib import load as joblib_load  # type: ignore
 from joblib import dump as joblib_dump  # type: ignore
 import numpy as np
 import os
@@ -200,10 +191,7 @@ def create_parser() -> argparse.ArgumentParser:
         "--preload-dir",
         type=str,
         default="models",
-        help=(
-            "Directory containing preloaded components (pt.pkl optional), "
-            "csp.json, classifier.joblib"
-        ),
+        help=("Directory containing preloaded components named step.joblib"),
     )
     preload_group.add_argument(
         "--no-preload",
@@ -338,7 +326,11 @@ def main(argv=None):
     # If running training subcommand, use its own minimal logging setup
     if getattr(args, "command", None) == "train":
         setup_logging("INFO", None)
-        pipeline_config, _ = load_pipeline_from_yaml(args.pipeline_config)
+        pipeline_config, _ = load_pipeline_from_yaml(
+            args.pipeline_config,
+            preload_dir=(None if args.no_preload else args.preload_dir),
+            enable_preload=not args.no_preload,
+        )
         if not args.use_calibrated:
             from brainbuilding.service.eeg_service import EEGOfflineRunner
 
@@ -405,7 +397,11 @@ def main(argv=None):
     # Lazy import to avoid pylsl dependency during training
     from brainbuilding.service.eeg_service import EEGService
 
-    pipeline_config, pretrained = load_pipeline_from_yaml(args.pipeline_config)
+    pipeline_config, pretrained = load_pipeline_from_yaml(
+        args.pipeline_config,
+        preload_dir=(None if args.no_preload else args.preload_dir),
+        enable_preload=not args.no_preload,
+    )
     service = EEGService(
         pipeline_config,
         tcp_host=config.tcp_host,
@@ -420,8 +416,10 @@ def main(argv=None):
         service.state_manager.pipeline_ready = (
             service.state_manager._have_all_components()
         )
+        keys = list(pretrained.keys())
+        ready = service.state_manager.pipeline_ready
         logging.info(
-            f"Preloaded components (from YAML): {list(pretrained.keys())}; pipeline_ready={service.state_manager.pipeline_ready}"
+            "Preloaded components: keys_count=%d ready=%s", len(keys), ready
         )
 
     try:

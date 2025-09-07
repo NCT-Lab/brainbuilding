@@ -19,7 +19,6 @@ from sklearn.svm import SVC  # type: ignore
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Type, Optional, Tuple
-import inspect
 import yaml  # type: ignore
 from pydantic import (
     BaseModel,
@@ -28,8 +27,11 @@ from pydantic import (
 )
 from typing import Any as _PydanticAny
 import logging
+import os
+from joblib import load as joblib_load  # type: ignore
 
 LOG_PIPELINE = logging.getLogger("brainbuilding.service.pipeline")
+
 
 @dataclass
 class PipelineStep:
@@ -41,6 +43,7 @@ class PipelineStep:
     apply_method: str = "transform"
     use_column: Optional[str] = None
     pass_class_label: bool = False
+    is_fit_during_runtime: bool = False
 
 
 @dataclass
@@ -64,12 +67,21 @@ class PipelineConfig:
                     component = step.component_class(**init_kwargs)
                     updated_components[step.name] = component
                 else:
+                    # TODO: raise error may be?
+                    LOG_PIPELINE.error(
+                        "Component %s not fit; cannot partial-fit. Aborting.",
+                        step.name,
+                    )
                     break
             else:
                 updated_components[step.name] = component
 
             if step.requires_fit and hasattr(component, "partial_fit"):
-                args = [current[step.use_column]] if step.use_column is not None else [current]
+                args = (
+                    [current[step.use_column]]
+                    if step.use_column is not None
+                    else [current]
+                )
                 if step.pass_class_label:
                     args.append(current["label"])
                 component.partial_fit(*args)
@@ -81,15 +93,18 @@ class PipelineConfig:
             else:
                 if step.apply_method in ("transform", "fit_transform"):
                     wrapper = StructuredColumnTransformer(
-                        column=step.use_column, transformer=component
+                        column=step.use_column,
+                        transformer=component,
                     )
                     apply_fn = getattr(wrapper, step.apply_method)
                     current = apply_fn(current)
                 else:
+                    # TODO: raise error may be?
                     LOG_PIPELINE.error(
-                        "Pipeline component requires column application"
-                        "and does not use either transform or transform."
-                        "This should not happen, returning empty fitted components"
+                        (
+                            "Component requires column application but lacks "
+                            "transform/fit_transform. Returning empty components"
+                        )
                     )
                     return {}
 
@@ -121,7 +136,11 @@ class PipelineConfig:
                 init_kwargs = step.init_params or {}
                 component = step.component_class(**init_kwargs)
                 if step.requires_fit:
-                    args = [current[step.use_column]] if step.use_column is not None else [current]
+                    args = (
+                        [current[step.use_column]]
+                        if step.use_column is not None
+                        else [current]
+                    )
                     if step.pass_class_label:
                         args.append(current["label"])
                     component.fit(*args)
@@ -137,15 +156,18 @@ class PipelineConfig:
             else:
                 if step.apply_method in ("transform", "fit_transform"):
                     wrapper = StructuredColumnTransformer(
-                        column=step.use_column, transformer=component
+                        column=step.use_column,
+                        transformer=component,
                     )
                     apply_fn = getattr(wrapper, step.apply_method)
                     current = apply_fn(current)
                 else:
+                    # TODO: raise error may be?
                     LOG_PIPELINE.error(
-                        "Pipeline component requires column application"
-                        "and does not use either transform or transform."
-                        "This should not happen, returning empty fitted components"
+                        (
+                            "Component requires column application but lacks "
+                            "transform/fit_transform. Returning empty components"
+                        )
                     )
                     return {}
 
@@ -163,8 +185,8 @@ class PipelineConfig:
             if component is None:
                 LOG_PIPELINE.error(
                     (
-                        "Some unfitted component has been encountered "
-                        "during prediction phase. This should not happen"
+                        "Some unfitted component has been encountered during "
+                        "prediction phase. This should not happen"
                     )
                 )
                 return None
@@ -175,20 +197,21 @@ class PipelineConfig:
             else:
                 if step.apply_method in ("transform", "fit_transform"):
                     wrapper = StructuredColumnTransformer(
-                        column=step.use_column, transformer=component
+                        column=step.use_column,
+                        transformer=component,
                     )
                     apply_fn = getattr(wrapper, step.apply_method)
                     current = apply_fn(current)
                 else:
-                    LOG_PIPELINE.error(
-                        "Pipeline component requires column application"
-                        "and does not use either transform or transform."
-                        "This should not happen, returning None"
+                    raise ValueError(
+                        (
+                            "Component requires column application but lacks "
+                            "transform/fit_transform"
+                        )
                     )
-                    return None
 
         return current
-        
+
 
     # -----------------------------
     # Calibration helpers
@@ -231,17 +254,18 @@ class PipelineConfig:
             else:
                 if step.apply_method in ("transform", "fit_transform"):
                     wrapper = StructuredColumnTransformer(
-                        column=step.use_column, transformer=component
+                        column=step.use_column,
+                        transformer=component,
                     )
                     apply_fn = getattr(wrapper, step.apply_method)
                     current = apply_fn(current)
                 else:
-                    LOG_PIPELINE.error(
-                        "Pipeline component requires column application"
-                        "and does not use either transform or transform."
-                        "This should not happen, returning None"
+                    raise ValueError(
+                        (
+                            "Component requires column application but lacks "
+                            "transform/fit_transform"
+                        )
                     )
-                    return None
 
         return current
 
@@ -264,15 +288,26 @@ class PipelineConfig:
         for step in self.get_training_steps():
             LOG_PIPELINE.info(f"Fitting step {step.name}")
             try:
-                LOG_PIPELINE.info(f"{current['sample'].shape=}")
+                LOG_PIPELINE.info("%s", f"{current['sample'].shape=}")
             except Exception:
-                LOG_PIPELINE.info(f"{current.shape=}")
+                LOG_PIPELINE.info("%s", f"{current.shape=}")
             init_kwargs = step.init_params or {}
             component = step.component_class(**init_kwargs)
 
             if step.requires_fit and hasattr(component, "fit"):
-                args = [current[step.use_column]] if step.use_column is not None else [current]
+                args = (
+                    [current[step.use_column]]
+                    if step.use_column is not None
+                    else [current]
+                )
                 if step.pass_class_label:
+                    if labels is None:
+                        raise ValueError(
+                            (
+                                "Labels are required for step '%s' but were not "
+                                "provided"
+                            ) % step.name
+                        )
                     args.append(labels)
                 component.fit(*args)
                 fitted[step.name] = component
@@ -285,17 +320,18 @@ class PipelineConfig:
                 else:
                     if step.apply_method in ("transform", "fit_transform"):
                         wrapper = StructuredColumnTransformer(
-                            column=step.use_column, transformer=component
+                            column=step.use_column,
+                            transformer=component,
                         )
                         apply_fn = getattr(wrapper, step.apply_method)
                         current = apply_fn(current)
                     else:
-                        LOG_PIPELINE.error(
-                            "Pipeline component requires column application"
-                            "and does not use either transform or transform."
-                            "This should not happen, returning None"
+                        raise ValueError(
+                            (
+                                "Component requires column application but lacks "
+                                "transform/fit_transform"
+                            )
                         )
-                        return None
 
         return fitted
 
@@ -310,7 +346,6 @@ class PipelineStepConfigModel(BaseModel):
     calibration: bool = False
     apply_method: str = "transform"
     init_params: Dict[str, Any] = Field(default_factory=dict)
-    pretrained_path: Optional[str] = None
     use_column: Optional[str] = None
     pass_class_label: bool = False
 
@@ -361,6 +396,8 @@ COMPONENT_REGISTRY: Dict[str, Type] = {
 
 def load_pipeline_from_yaml(
     path: str,
+    preload_dir: Optional[str] = None,
+    enable_preload: bool = True,
 ) -> Tuple[PipelineConfig, Dict[str, Any]]:
     """Load a PipelineConfig and initial fitted components from a YAML file.
 
@@ -390,6 +427,21 @@ def load_pipeline_from_yaml(
             pass_class_label=s.pass_class_label,
         )
         steps.append(step)
+
+        # Optional preload of pretrained components from a single directory
+        if enable_preload and preload_dir:
+            candidate_path = os.path.join(preload_dir, f"{s.name}.joblib")
+            if os.path.exists(candidate_path):
+                loaded = joblib_load(candidate_path)
+                if not isinstance(loaded, component_cls):
+                    raise ValueError(
+                        (
+                            f"Pretrained artifact at '{candidate_path}' for step "
+                            f"'{s.name}' has type {type(loaded).__name__}; "
+                            f"expected {component_cls.__name__}"
+                        )
+                    )
+                pretrained[s.name] = loaded
 
     return PipelineConfig(steps=steps), pretrained
 
