@@ -30,6 +30,7 @@ LOG = logging.getLogger("brainbuilding.service")
 LOG_INFER = logging.getLogger("brainbuilding.service.inference")
 LOG_STATE = logging.getLogger("brainbuilding.service.state")
 LOG_STREAM = logging.getLogger("brainbuilding.service.stream")
+LOG_RUNNER = logging.getLogger("brainbuilding.service.runner")
 
 
 """StateDefinition is imported from state_types and used directly."""
@@ -134,9 +135,10 @@ def process_window_in_pool(
     )
     processing_time = time.time() - start_time
 
-    if not prediction:
+    if prediction is not None:
+        prediction, probability = prediction[0]
+    else:
         return None
-    prediction, probability = prediction[0]
 
     LOG_INFER.info(
         "Prediction=%s Prob=%.3f Time=%.3fs",

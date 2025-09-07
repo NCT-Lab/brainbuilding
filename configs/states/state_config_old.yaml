@@ -1,5 +1,6 @@
 processing_states:
   Idle: 0
+  Idle2: -1
   EyeWarmupDesc: 1
   EyeWarmupBlink: 2
   EyeWarmupText: 3
@@ -38,20 +39,31 @@ states:
   Idle:
     accepted_events:
       EYE_WARMUP_DESC: EyeWarmupDesc
+      EYE_WARMUP_BLINK: EyeWarmupBlink
+
+  Idle2:
+    accepted_events:
+      POINT: Imagery
+      REST: Rest
+      VAS: Idle2
+
   EyeWarmupDesc:
     accepted_events:
       EYE_WARMUP_BLINK: EyeWarmupBlink
       BACKGROUND: Background
+
   EyeWarmupBlink:
     accepted_events:
       EYE_WARMUP_TEXT: EyeWarmupText
       BACKGROUND: Background
       EYE_WARMUP_BLINK: EyeWarmupBlink
     data_collection_group: EYE_MOVEMENT
+
   EyeWarmupText:
     accepted_events:
       EYE_WARMUP_MOVE: EyeWarmupMove
       BACKGROUND: Background
+
   EyeWarmupMove:
     accepted_events:
       EYE_WARMUP_BLINK: EyeWarmupBlink
@@ -63,6 +75,7 @@ states:
     on_transition_action_groups:
       Background:
         FIT: EYE_MOVEMENT
+
   Background:
     accepted_events:
       REST: Rest
@@ -72,17 +85,21 @@ states:
       POINT: Imagery
     data_collection_group: BACKGROUND
     on_exit_actions: [FIT]
+
   Rest:
     accepted_events:
       IMAGE_LEFT: Imagery
       IMAGE_RIGHT: Imagery
       POINT: Imagery
       BACKGROUND: Background
+      ATTENTION: Idle2
     data_collection_group: REST
     on_exit_actions: [COLLECT_FOR_TRAIN]
+
   Imagery:
     accepted_events:
       REST: Rest
-      BACKGROUND: Background
+      VAS: Idle2
+      BACKGROUND: Idle2
     data_collection_group: IMAGERY
     on_exit_actions: [COLLECT_FOR_TRAIN]
