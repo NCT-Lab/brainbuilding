@@ -24,3 +24,7 @@ class OnlineSignalFilter:
         sample = sample.reshape(1, -1)  # Ensure correct shape
         filtered, self.zi = sosfilt(self.sos, sample, axis=0, zi=self.zi)
         return filtered.flatten()
+    
+    def process_samples_batch(self, samples: np.ndarray) -> np.ndarray:
+        filtered, self.zi = sosfilt(self.sos, samples, axis=0, zi=self.zi)
+        return filtered
