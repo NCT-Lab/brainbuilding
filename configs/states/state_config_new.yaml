@@ -1,0 +1,134 @@
+processing_states:
+  Idle: 0
+  EyeWarmupDesc: 1
+  EyeWarmupBlink: 2
+  EyeWarmupText: 3
+  EyeWarmupMove: 4
+  Background: 5
+  PrepareToAdaptation: 6
+  RestAdaptation: 7
+  AttentionAdaptation: 8
+  MoveAdaptation: 9
+  RehabDesc: 10
+  RestInference: 11
+  AttentionInference: 12
+  MoveInference: 13
+  IntermediateResult: 14
+
+logical_groups:
+  EYE_MOVEMENT: 1
+  BACKGROUND: 2
+  ADAPTATION: 3
+  INFERENCE: 4
+
+windowing:
+  window_size: 750
+  step_sizes:
+    PARTIAL_FIT: 750
+    COLLECT_FOR_TRAIN: 750
+    PREDICT: 250
+
+event_ids:
+  WELCOME_TIMER: 1
+  BACKGROUND: 2
+  ADAPTATION_DESC: 3
+  REHAB_DESC: 4
+  INTERMEDIATE_RESULT: 5
+  EYE_WARMUP_DESC: 20
+  EYE_WARMUP_BLINK: 21
+  EYE_WARMUP_TEXT: 22
+  EYE_WARMUP_MOVE: 23
+  REST: 30
+  ATTENTION: 31
+  MOVE_LEFT: 32
+  MOVE_RIGHT: 33
+  IDLE: -1
+
+states:
+  Idle:
+    accepted_events:
+      WELCOME_TIMER: Idle
+      EYE_WARMUP_DESC: EyeWarmupDesc
+
+  EyeWarmupDesc:
+    accepted_events:
+      EYE_WARMUP_BLINK: EyeWarmupBlink
+  
+  EyeWarmupBlink:
+    accepted_events:
+      EYE_WARMUP_TEXT: EyeWarmupText
+    data_collection_group: EYE_MOVEMENT
+
+  EyeWarmupText:
+    accepted_events:
+      EYE_WARMUP_MOVE: EyeWarmupMove
+
+  EyeWarmupMove:
+    accepted_events:
+      EYE_WARMUP_BLINK: EyeWarmupBlink
+      BACKGROUND: Background
+    data_collection_group: EYE_MOVEMENT
+    on_transition_actions:
+      Background: [FIT]
+    on_transition_action_groups:
+      Background:
+        FIT: EYE_MOVEMENT
+
+  Background:
+    accepted_events:
+      ADAPTATION_DESC: PrepareToAdaptation
+    data_collection_group: BACKGROUND
+    on_exit_actions: [FIT]
+  
+  PrepareToAdaptation:
+    accepted_events:
+      REST: RestAdaptation
+  
+  RestAdaptation:
+    accepted_events:
+      ATTENTION: AttentionAdaptation
+    data_collection_group: ADAPTATION
+    on_entry_actions: [PARTIAL_FIT]
+    on_exit_actions: [PARTIAL_FIT]
+  
+  AttentionAdaptation:
+    accepted_events:
+      MOVE_LEFT: MoveAdaptation
+      MOVE_RIGHT: MoveAdaptation
+  
+  MoveAdaptation:
+    accepted_events:
+      REHAB_DESC: RehabDesc
+      REST: RestAdaptation
+    data_collection_group: ADAPTATION
+    on_exit_actions: [PARTIAL_FIT]
+    on_entry_actions: [PARTIAL_FIT]
+  
+  RehabDesc:
+    accepted_events:
+      REST: RestInference
+
+  RestInference:
+    accepted_events:
+      ATTENTION: AttentionInference
+    data_collection_group: INFERENCE
+    on_entry_actions: [PREDICT]
+    on_exit_actions: [PREDICT]
+
+  AttentionInference:
+    accepted_events:
+      MOVE_LEFT: MoveInference
+      MOVE_RIGHT: MoveInference
+  
+  MoveInference:
+    accepted_events:
+      REST: RestInference
+      INTERMEDIATE_RESULT: IntermediateResult
+    data_collection_group: INFERENCE
+    on_exit_actions: [PREDICT]
+    on_entry_actions: [PREDICT]
+  
+  IntermediateResult:
+    accepted_events:
+      REST: RestInference
+      BACKGROUND: Idle

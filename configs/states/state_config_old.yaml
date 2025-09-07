@@ -94,7 +94,8 @@ states:
       BACKGROUND: Background
       ATTENTION: Idle2
     data_collection_group: REST
-    on_exit_actions: [COLLECT_FOR_TRAIN]
+    on_entry_actions: [COLLECT_FOR_TRAIN, PREDICT]
+    on_exit_actions: [COLLECT_FOR_TRAIN, PREDICT]
 
   Imagery:
     accepted_events:
@@ -102,4 +103,6 @@ states:
       VAS: Idle2
       BACKGROUND: Idle2
     data_collection_group: IMAGERY
-    on_exit_actions: [COLLECT_FOR_TRAIN]
+    on_exit_actions: [COLLECT_FOR_TRAIN, PREDICT]
+    on_entry_actions: [COLLECT_FOR_TRAIN, PREDICT]
+    class_label: 1

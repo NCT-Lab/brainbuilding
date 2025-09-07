@@ -45,7 +45,7 @@ async def tcp_sender_async(
                 data = json.dumps(payload).encode() + b"\n"
                 writer.write(data)
                 await writer.drain()
-                logging.info(f"Sent message: {payload.get('type')}")
+                logging.info(f"Sent message: {payload}")
             except Empty:
                 await asyncio.sleep(0.0001)
             except Exception as e:

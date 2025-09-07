@@ -41,6 +41,7 @@ class StateConfig(BaseModel):
     on_entry_action_groups: Optional[Dict[str, str]] = None
     on_exit_action_groups: Optional[Dict[str, str]] = None
     on_transition_action_groups: Optional[Dict[str, Dict[str, str]]] = None
+    class_label: int = 0
 
 
 class StateMachineConfig(BaseModel):
@@ -83,6 +84,7 @@ class StateMachineConfig(BaseModel):
             self._step_by_action[TransitionAction[action_name]] = int(step_val)
         return self
 
+    # TODO: надо все это дело нормально переписать без этой императивщины
     @property
     def runtime(self) -> StateMachineRuntime:
         # Precompute name->enum map once
@@ -104,6 +106,7 @@ class StateMachineConfig(BaseModel):
             states_rt[state_enum] = StateDefinition(
                 name=state_enum,
                 accepted_events=acc_events,
+                class_label=sc.class_label,
                 data_collection_group=(
                     self._group_enum[sc.data_collection_group]
                     if isinstance(sc.data_collection_group, str)

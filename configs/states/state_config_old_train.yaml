@@ -1,52 +1,69 @@
 processing_states:
   Idle: 0
+  Idle2: -1
   EyeWarmupDesc: 1
   EyeWarmupBlink: 2
   EyeWarmupText: 3
   EyeWarmupMove: 4
   Background: 5
-  Inference: 6
+  Rest: 6
+  Imagery: 7
 
 logical_groups:
-  EYE_MOVEMENT: 1
-  BACKGROUND: 2
-  INFERENCE: 3
+  REST: 0
+  IMAGERY: 1
+  EYE_MOVEMENT: 2
+  BACKGROUND: 3
 
 event_ids:
-  EYE_WARMUP_DESC: 1
-  EYE_WARMUP_BLINK: 2
-  EYE_WARMUP_TEXT: 3
-  EYE_WARMUP_MOVE: 4
-  BACKGROUND: 5
-  TASK_PERIOD: 10
+  EYE_WARMUP_DESC: 0
+  EYE_WARMUP_BLINK: 10
+  EYE_WARMUP_TEXT: 11
+  EYE_WARMUP_MOVE: 12
+  BACKGROUND: 1
+  REST: 2
+  ATTENTION: 3
+  POINT: 5
+  VAS: 0
+  IMAGE_LEFT: 5
+  IMAGE_RIGHT: 4
 
 windowing:
-  window_size: 250
+  window_size: 1500
   step_sizes:
-    PARTIAL_FIT: 250
-    COLLECT_FOR_TRAIN: 250
+    PARTIAL_FIT: 1500
+    COLLECT_FOR_TRAIN: 1500
     PREDICT: 125
 
 states:
   Idle:
     accepted_events:
       EYE_WARMUP_DESC: EyeWarmupDesc
-      BACKGROUND: Background
-      TASK_PERIOD: Inference
+      EYE_WARMUP_BLINK: EyeWarmupBlink
+
+  Idle2:
+    accepted_events:
+      POINT: Imagery
+      REST: Rest
+      VAS: Idle2
+
   EyeWarmupDesc:
     accepted_events:
       EYE_WARMUP_BLINK: EyeWarmupBlink
       BACKGROUND: Background
+
   EyeWarmupBlink:
     accepted_events:
       EYE_WARMUP_TEXT: EyeWarmupText
       BACKGROUND: Background
       EYE_WARMUP_BLINK: EyeWarmupBlink
     data_collection_group: EYE_MOVEMENT
+
   EyeWarmupText:
     accepted_events:
       EYE_WARMUP_MOVE: EyeWarmupMove
       BACKGROUND: Background
+
   EyeWarmupMove:
     accepted_events:
       EYE_WARMUP_BLINK: EyeWarmupBlink
@@ -58,21 +75,34 @@ states:
     on_transition_action_groups:
       Background:
         FIT: EYE_MOVEMENT
+
   Background:
     accepted_events:
-      TASK_PERIOD: Inference
+      REST: Rest
+      EYE_WARMUP_DESC: EyeWarmupDesc
+      IMAGE_LEFT: Imagery
+      IMAGE_RIGHT: Imagery
+      POINT: Imagery
     data_collection_group: BACKGROUND
     on_exit_actions: [FIT]
-  Inference:
+
+  Rest:
     accepted_events:
-      EYE_WARMUP_DESC: EyeWarmupDesc
+      IMAGE_LEFT: Imagery
+      IMAGE_RIGHT: Imagery
+      POINT: Imagery
       BACKGROUND: Background
-    data_collection_group: INFERENCE
-    on_entry_actions: [PREDICT, PARTIAL_FIT]
-    on_exit_actions: [PREDICT, PARTIAL_FIT]
-    on_entry_action_groups:
-      PREDICT: INFERENCE
-      PARTIAL_FIT: INFERENCE
-    on_exit_action_groups:
-      PREDICT: INFERENCE
-      PARTIAL_FIT: INFERENCE
+      ATTENTION: Idle2
+    data_collection_group: REST
+    on_entry_actions: [COLLECT_FOR_TRAIN]
+    on_exit_actions: [COLLECT_FOR_TRAIN]
+
+  Imagery:
+    accepted_events:
+      REST: Rest
+      VAS: Idle2
+      BACKGROUND: Idle2
+    data_collection_group: IMAGERY
+    on_exit_actions: [COLLECT_FOR_TRAIN]
+    on_entry_actions: [COLLECT_FOR_TRAIN]
+    class_label: 1

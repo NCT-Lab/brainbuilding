@@ -4,7 +4,7 @@ import pyxdf
 from pylsl import StreamInfo, StreamOutlet
 import json
 
-with open("data/raw-dataset-2/1/Task.json") as f:
+with open("data/new-dataset/temp/Task.json") as f:
     EVENTS = json.load(f)
 
 event_map = {
@@ -92,7 +92,6 @@ class MockLSLSender:
 
             if stream_name == "Brainbuilding-Events":
                 print(f"Event {self.get_sample_type(sample_id)} from {stream_name} at {timestamp:.3f}")
-                sample = [0, event_map[self.get_sample_type(sample_id)]]
             else:
                 pass
             outlet.push_sample(sample, timestamp)
@@ -147,7 +146,7 @@ class ResultsReceiver:
 
 async def main():
     sender = MockLSLSender(
-        xdf_file="data/raw-dataset-2/1/data.xdf"
+        xdf_file="data/new-dataset/temp/data.xdf"
     )
     
     await asyncio.gather(

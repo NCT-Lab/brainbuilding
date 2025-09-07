@@ -183,13 +183,15 @@ class PipelineConfig:
             component = fitted_components.get(step.name, None)
 
             if component is None:
-                LOG_PIPELINE.error(
-                    (
-                        "Some unfitted component has been encountered during "
-                        "prediction phase. This should not happen"
+                if not step.requires_fit:
+                    init_kwargs = step.init_params or {}
+                    component = step.component_class(**init_kwargs)
+                else:
+                    LOG_PIPELINE.error(
+                        "Component %s not fit; cannot predict. Aborting.",
+                        step.name,
                     )
-                )
-                return None
+                    return None
 
             if step.use_column is None:
                 apply_fn = getattr(component, step.apply_method)
@@ -348,6 +350,7 @@ class PipelineStepConfigModel(BaseModel):
     init_params: Dict[str, Any] = Field(default_factory=dict)
     use_column: Optional[str] = None
     pass_class_label: bool = False
+    is_fit_during_runtime: bool = False
 
     @field_validator("component")
     @classmethod

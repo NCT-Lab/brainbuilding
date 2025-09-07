@@ -28,9 +28,10 @@ from brainbuilding.core.config import (
     DEFAULT_TCP_PORT,
     DEFAULT_TCP_RETRIES,
     REFERENCE_CHANNEL,
-    EEGProcessingConfig,
 )
 from brainbuilding.service.pipeline import load_pipeline_from_yaml
+from brainbuilding.service.eeg_service import StateCheckRunner, EEGEvaluationRunner
+from sklearn.metrics import f1_score, r2_score
 
 
 def setup_logging(log_level: str = "INFO", log_file: Optional[str] = None) -> None:
@@ -96,54 +97,14 @@ class ServeOptions(BaseModel):
     no_preload: bool = False
 
 
-class TrainOptions(BaseModel):
-    calibrated_array_path: str = "data/calibrated.npy"
-    save_calibrated: bool = True
-    use_calibrated: bool = False
-
-    sessions_root: str = "data"
-    sessions_dirs: Optional[List[str]] = None
-    output_dir: str = "models"
-    exclude_label: int = 2
-
-    pipeline_config: str = "configs/pipeline_config.yaml"
-    state_config: str = "configs/states/state_config.yaml"
-
-    preload_dir: str = "models"
-    no_preload: bool = False
-
-
-def options_to_processing_config(opts: ServeOptions) -> EEGProcessingConfig:
-    return EEGProcessingConfig(
-        channels=opts.channels,
-        reference_channel=opts.reference_channel,
-        processing_window_size=opts.processing_window_size,
-        processing_step=opts.processing_step,
-        sfreq=opts.sfreq,
-        eeg_stream_name=opts.eeg_stream_name,
-        event_stream_name=opts.event_stream_name,
-        tcp_host=opts.tcp_host,
-        tcp_port=opts.tcp_port,
-        tcp_retries=opts.tcp_retries,
-        pipeline_path=opts.pipeline_config,
-        history_path=opts.history_path,
-        scale_factor=opts.scale_factor,
-        debug=opts.debug,
-    )
-
-
 app = typer.Typer(help="Real-time EEG processing for brain-computer interfaces")
 
 
 @app.command("serve")
 def serve(
-    eeg_stream_name: str = typer.Option(DEFAULT_EEG_STREAM_NAME, help="EEG LSL stream name"),
-    event_stream_name: str = typer.Option(DEFAULT_EVENT_STREAM_NAME, help="Event LSL stream name"),
     channels: List[str] = typer.Option(list(CHANNELS_IN_STREAM), help="Channels in stream"),
     channels_to_keep: List[str] = typer.Option(list(CHANNELS_TO_KEEP), help="Channels to keep for processing"),
     reference_channel: str = typer.Option(REFERENCE_CHANNEL, help="Reference channel name"),
-    processing_window_size: int = typer.Option(DEFAULT_PROCESSING_WINDOW_SIZE, help="Window size (samples)"),
-    processing_step: int = typer.Option(DEFAULT_PROCESSING_STEP, help="Step size (samples)"),
     sfreq: float = typer.Option(DEFAULT_SFREQ, help="Sampling frequency (Hz)"),
     session_id: Optional[str] = typer.Option(None, help="Session identifier"),
     scale_factor: float = typer.Option(DEFAULT_SCALE_FACTOR, help="Scale factor for unit conversion"),
@@ -151,7 +112,6 @@ def serve(
     tcp_port: int = typer.Option(DEFAULT_TCP_PORT, help="TCP port"),
     tcp_retries: int = typer.Option(DEFAULT_TCP_RETRIES, help="Max TCP retries"),
     pipeline_config_path: str = typer.Option("configs/pipeline_config.yaml", help="Pipeline YAML path"),
-    history_path: str = typer.Option(DEFAULT_HISTORY_PATH, help="History output path"),
     state_config_path: Optional[str] = typer.Option("configs/states/state_config.yaml", help="State machine YAML path"),
     preload_dir: str = typer.Option("models", help="Preload directory for components"),
     no_preload: bool = typer.Option(False, help="Disable preloading components"),
@@ -159,51 +119,26 @@ def serve(
     log_file: Optional[str] = typer.Option(None, help="Log file path"),
     debug: bool = typer.Option(False, help="Enable debug logging"),
 ) -> None:
-    opts = ServeOptions(
-        eeg_stream_name=eeg_stream_name,
-        event_stream_name=event_stream_name,
-        channels=channels,
-        channels_to_keep=channels_to_keep,
-        reference_channel=reference_channel,
-        processing_window_size=processing_window_size,
-        processing_step=processing_step,
-        sfreq=sfreq,
-        session_id=session_id,
-        scale_factor=scale_factor,
-        tcp_host=tcp_host,
-        tcp_port=tcp_port,
-        tcp_retries=tcp_retries,
-        pipeline_config=pipeline_config_path,
-        history_path=history_path,
-        state_config=state_config_path,
-        preload_dir=preload_dir,
-        no_preload=no_preload,
-        log_level=log_level,
-        log_file=log_file,
-        debug=debug,
-    )
-
-    setup_logging(opts.log_level, opts.log_file)
-    if opts.debug:
+    setup_logging(log_level, log_file)
+    if debug:
         logging.getLogger().setLevel(logging.DEBUG)
-
-    config = options_to_processing_config(opts)
 
     from brainbuilding.service.eeg_service import EEGService
 
     pipeline_config, pretrained = load_pipeline_from_yaml(
-        opts.pipeline_config,
-        preload_dir=(None if opts.no_preload else opts.preload_dir),
-        enable_preload=not opts.no_preload,
+        pipeline_config_path,
+        preload_dir=(None if no_preload else preload_dir),
+        enable_preload=not no_preload,
     )
 
     service = EEGService(
         pipeline_config,
-        tcp_host=config.tcp_host,
-        tcp_port=config.tcp_port,
-        tcp_retries=config.tcp_retries,
-        state_config_path=opts.state_config,
-        session_id=opts.session_id,
+        tcp_host=tcp_host,
+        tcp_port=tcp_port,
+        tcp_retries=tcp_retries,
+        state_config_path=state_config_path,
+        session_id=session_id,
+        sfreq=sfreq,
     )
 
     if pretrained:
@@ -238,39 +173,26 @@ def train(
     state_config_path: str = typer.Option("configs/states/state_config.yaml", help="State machine YAML path"),
     preload_dir: str = typer.Option("models", help="Preload directory for components"),
     no_preload: bool = typer.Option(False, help="Disable preloading components"),
+    sfreq: float = typer.Option(DEFAULT_SFREQ, help="Sampling frequency (Hz)"),
 ) -> None:
-    opts = TrainOptions(
-        calibrated_array_path=calibrated_array_path,
-        save_calibrated=save_calibrated,
-        use_calibrated=use_calibrated,
-        sessions_root=sessions_root,
-        sessions_dirs=sessions_dirs,
-        output_dir=output_dir,
-        exclude_label=exclude_label,
-        pipeline_config=pipeline_config_path,
-        state_config=state_config_path,
-        preload_dir=preload_dir,
-        no_preload=no_preload,
-    )
-
     setup_logging("INFO", None)
 
     pipeline_config, _ = load_pipeline_from_yaml(
-        opts.pipeline_config,
-        preload_dir=(None if opts.no_preload else opts.preload_dir),
-        enable_preload=not opts.no_preload,
+        pipeline_config_path,
+        preload_dir=(None if no_preload else preload_dir),
+        enable_preload=not no_preload,
     )
 
-    if not opts.use_calibrated:
+    if not use_calibrated:
         from brainbuilding.service.eeg_service import EEGOfflineRunner
 
-        if opts.sessions_dirs is not None and len(opts.sessions_dirs) > 0:
-            session_dirs = [d for d in opts.sessions_dirs if os.path.isdir(d)]
+        if sessions_dirs is not None and len(sessions_dirs) > 0:
+            session_dirs = [d for d in sessions_dirs if os.path.isdir(d)]
         else:
             session_dirs = [
-                os.path.join(opts.sessions_root, d)
-                for d in os.listdir(opts.sessions_root)
-                if os.path.isdir(os.path.join(opts.sessions_root, d))
+                os.path.join(sessions_root, d)
+                for d in os.listdir(sessions_root)
+                if os.path.isdir(os.path.join(sessions_root, d))
             ]
 
         all_rows: List[np.ndarray] = []
@@ -283,7 +205,8 @@ def train(
             logging.info("Loading %s", xdf_path)
             runner = EEGOfflineRunner(
                 pipeline_config=pipeline_config,
-                state_config_path=opts.state_config,
+                state_config_path=state_config_path,
+                sfreq=sfreq,
             )
             rows = runner.run_from_xdf(xdf_path, session_id=sess_id)
             all_rows.extend(rows)
@@ -292,11 +215,11 @@ def train(
         if data.size == 0:
             raise RuntimeError("No calibrated data produced from provided sessions")
 
-        if opts.save_calibrated:
-            np.save(opts.calibrated_array_path, data)
+        if save_calibrated:
+            np.save(calibrated_array_path, data)
         all_rows_arr = data
     else:
-        all_rows_arr = np.load(opts.calibrated_array_path)
+        all_rows_arr = np.load(calibrated_array_path)
 
     logging.info("%s", f"{all_rows_arr.shape=}")
     logging.info("%s", f"{all_rows_arr['sample'].shape=}")
@@ -305,11 +228,182 @@ def train(
     training_cfg = pipeline_config.training_only_config()
     fitted = training_cfg.fit_training(all_rows_arr, y)
 
-    os.makedirs(opts.output_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
     for name, comp in fitted.items():
-        outp = os.path.join(opts.output_dir, f"{name}.joblib")
+        outp = os.path.join(output_dir, f"{name}.joblib")
         joblib_dump(comp, outp)
-    logging.info("Saved %d components to %s", len(fitted), opts.output_dir)
+    logging.info("Saved %d components to %s", len(fitted), output_dir)
+
+
+@app.command("check-states")
+def check_states(
+    sessions_root: str = typer.Option(
+        "data", help="Root directory containing session subfolders"
+    ),
+    sessions_dirs: Optional[List[str]] = typer.Option(
+        None, help="Explicit list of session directories"
+    ),
+    state_config_path: str = typer.Option(
+        "configs/states/state_config.yaml", help="State machine YAML path"
+    ),
+) -> None:
+    """Validate state machine transitions against task definitions."""
+
+    setup_logging("INFO", None)
+
+    if sessions_dirs is not None and len(sessions_dirs) > 0:
+        session_dirs = [d for d in sessions_dirs if os.path.isdir(d)]
+    else:
+        session_dirs = [
+            os.path.join(sessions_root, d)
+            for d in os.listdir(sessions_root)
+            if os.path.isdir(os.path.join(sessions_root, d))
+        ]
+
+    runner = StateCheckRunner(state_config_path=state_config_path)
+    total_mismatches = 0
+
+    for sess_dir in sorted(session_dirs):
+        xdf_path = os.path.join(sess_dir, "data.xdf")
+        task_json_path = os.path.join(sess_dir, "task.json")
+
+        if not os.path.exists(xdf_path) or not os.path.exists(task_json_path):
+            logging.warning(
+                "Skipping %s: missing data.xdf or task.json", sess_dir
+            )
+            continue
+
+        logging.info("Checking states for session: %s", sess_dir)
+        mismatches = runner.run_check(xdf_path, task_json_path)
+
+        if mismatches:
+            logging.error(
+                "Found %d mismatches in %s:", len(mismatches), sess_dir
+            )
+            for i, (expected, actual) in mismatches.items():
+                logging.error(
+                    "  Event index %d: Expected '%s', got '%s'",
+                    i,
+                    expected,
+                    actual,
+                )
+            total_mismatches += len(mismatches)
+        else:
+            logging.info("Session %s OK: All states matched.", sess_dir)
+
+    if total_mismatches > 0:
+        logging.error("State check failed with %d total mismatches.", total_mismatches)
+    else:
+        logging.info("State check passed for all sessions.")
+
+
+@app.command("evaluate")
+def evaluate(
+    sessions_root: str = typer.Option(
+        "data", help="Root directory containing session subfolders"
+    ),
+    sessions_dirs: Optional[List[str]] = typer.Option(
+        None, help="Explicit list of session directories"
+    ),
+    pipeline_config_path: str = typer.Option(
+        "configs/pipeline/pipeline_config.yaml", help="Pipeline YAML path for evaluation"
+    ),
+    state_config_path: str = typer.Option(
+        "configs/states/state_config.yaml", help="State machine YAML path"
+    ),
+    preload_dir: str = typer.Option("models", help="Preload directory for components"),
+    no_preload: bool = typer.Option(False, help="Disable preloading components"),
+    sfreq: float = typer.Option(DEFAULT_SFREQ, help="Sampling frequency (Hz)"),
+) -> None:
+    """Evaluate pipeline performance against offline data."""
+    setup_logging("INFO", None)
+
+    pipeline_config, pretrained = load_pipeline_from_yaml(
+        pipeline_config_path,
+        preload_dir=(None if no_preload else preload_dir),
+        enable_preload=not no_preload,
+    )
+
+    if sessions_dirs is not None and len(sessions_dirs) > 0:
+        session_dirs = [d for d in sessions_dirs if os.path.isdir(d)]
+    else:
+        session_dirs = [
+            os.path.join(sessions_root, d)
+            for d in os.listdir(sessions_root)
+            if os.path.isdir(os.path.join(sessions_root, d))
+        ]
+
+    runner = EEGEvaluationRunner(
+        pipeline_config=pipeline_config,
+        state_config_path=state_config_path,
+        sfreq=sfreq,
+        pretrained_components=pretrained,
+    )
+    runner.pipeline_config.steps = [
+        s for s in runner.pipeline_config.steps if not s.is_fit_during_runtime
+    ]
+
+    all_predictions_agg = []
+    all_ground_truth_agg = []
+    all_probabilities_agg = []
+    all_true_ratios_agg = []
+
+    for sess_dir in sorted(session_dirs):
+        sess_id = os.path.basename(sess_dir)
+        xdf_path = os.path.join(sess_dir, "data.xdf")
+        if not os.path.exists(xdf_path):
+            logging.info("Skipping %s because it does not exist", xdf_path)
+            continue
+        logging.info("Evaluating session: %s", sess_dir)
+
+        (
+            predictions,
+            ground_truth,
+            probabilities,
+            true_ratios,
+        ) = runner.run_from_xdf(xdf_path, session_id=sess_id)
+
+        if not ground_truth:
+            logging.warning("No data to evaluate for session %s.", sess_dir)
+            continue
+
+        # Per-session stats
+        f1 = f1_score(ground_truth, predictions, average="weighted", zero_division=0)
+        logging.info(f"  Session F1 Score (weighted): {f1:.4f}")
+
+        if true_ratios:
+            try:
+                r2 = r2_score(true_ratios, probabilities)
+                logging.info(f"  Session R2 Score: {r2:.4f}")
+            except ValueError as e:
+                logging.warning(f"  Could not calculate session R2 score: {e}")
+
+        # Aggregate results
+        all_predictions_agg.extend(predictions)
+        all_ground_truth_agg.extend(ground_truth)
+        all_probabilities_agg.extend(probabilities)
+        all_true_ratios_agg.extend(true_ratios)
+
+    if not all_ground_truth_agg:
+        logging.warning("No data to evaluate across all sessions.")
+        return
+
+    # Final aggregate stats
+    logging.info("=" * 20)
+    logging.info("Aggregate Evaluation Results")
+    logging.info("=" * 20)
+
+    final_f1 = f1_score(
+        all_ground_truth_agg, all_predictions_agg, average="weighted", zero_division=0
+    )
+    logging.info(f"Overall F1 Score (weighted): {final_f1:.4f}")
+
+    if all_true_ratios_agg:
+        try:
+            final_r2 = r2_score(all_true_ratios_agg, all_probabilities_agg)
+            logging.info(f"Overall R2 Score: {final_r2:.4f}")
+        except ValueError as e:
+            logging.warning(f"Could not calculate overall R2 score: {e}")
 
 
 def main(argv: Optional[List[str]] = None) -> None:

@@ -17,6 +17,7 @@ class TransitionAction(IntEnum):
 class StateDefinition:
     name: IntEnum
     accepted_events: Dict[int, IntEnum]
+    class_label: int = 0
     data_collection_group: Optional[IntEnum] = None
     on_entry_actions: List[TransitionAction] = field(default_factory=list)
     on_exit_actions: List[TransitionAction] = field(default_factory=list)
