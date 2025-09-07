@@ -250,7 +250,7 @@ class ParallelTransportTransformer(BaseEstimator, TransformerMixin):
             subject_covs = covariances[mask]
 
             # global mean drift prevention logic
-            current_count = self.subject_counts_.get(int(subject), 0)
+            current_count = self.subject_counts_.get(subject, 0)
             if self.prevent_subject_drift:
                 allow_n = max(0, self.max_samples_for_subject - current_count)
                 allow_n = min(allow_n, len(subject_covs))
