@@ -33,7 +33,7 @@ windowing:
   step_sizes:
     PARTIAL_FIT: 1500
     COLLECT_FOR_TRAIN: 1500
-    PREDICT: 125
+    PREDICT: 1500
 
 states:
   Idle:
@@ -46,6 +46,9 @@ states:
       POINT: Imagery
       REST: Rest
       VAS: Idle2
+      IMAGE_LEFT: Imagery
+      IMAGE_RIGHT: Imagery
+      BACKGROUND: Idle2
 
   EyeWarmupDesc:
     accepted_events:

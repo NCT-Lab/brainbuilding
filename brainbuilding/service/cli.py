@@ -31,8 +31,9 @@ from brainbuilding.core.config import (
 )
 from brainbuilding.service.pipeline import load_pipeline_from_yaml
 from brainbuilding.service.eeg_service import StateCheckRunner, EEGEvaluationRunner
-from sklearn.metrics import f1_score, roc_auc_score
+from sklearn.metrics import f1_score, roc_auc_score, confusion_matrix
 
+LOG_TRAIN = logging.getLogger("brainbuilding.service.train")
 
 def setup_logging(log_level: str = "INFO", log_file: Optional[str] = None) -> None:
     numeric_level = getattr(logging, log_level.upper(), None)
@@ -209,6 +210,11 @@ def train(
                 sfreq=sfreq,
             )
             rows = runner.run_from_xdf(xdf_path, session_id=sess_id)
+            rows_arr = np.concatenate(rows)
+            LOG_TRAIN.info(
+                f"Number of unique states within a subject {sess_id}:"
+                f"{len(np.unique(rows_arr['state_visit_id']))}"
+            )
             all_rows.extend(rows)
 
         data = np.concatenate(all_rows) if len(all_rows) > 0 else np.array([])
@@ -226,6 +232,16 @@ def train(
 
     y = all_rows_arr["label"]
     training_cfg = pipeline_config.training_only_config()
+    # for session_id in np.unique(all_rows_arr['session_id']):
+    #     discard_session = all_rows_arr['session_id'] != session_id
+    #     discarded_session = all_rows_arr['session_id'] == session_id
+    #     fitted = training_cfg.fit_training(all_rows_arr[discard_session], y[discard_session])
+    #     y_pred = training_cfg.apply_training(all_rows_arr[discarded_session], fitted)[:, 0]
+    #     score = f1_score(
+    #         y[discarded_session], y_pred
+    #     )
+    #     LOG_TRAIN.info(f"F1 score for session {session_id} during LOSOCV: {score}")
+        
     fitted = training_cfg.fit_training(all_rows_arr, y)
 
     os.makedirs(output_dir, exist_ok=True)
@@ -360,7 +376,7 @@ def evaluate(
             predictions,
             ground_truth,
             probabilities,
-            class_probabilities,
+            # class_probabilities,
         ) = runner.run_from_xdf(xdf_path, session_id=sess_id)
 
         if not ground_truth:
@@ -368,65 +384,68 @@ def evaluate(
             continue
 
         # Per-session stats
-        f1 = f1_score(ground_truth, predictions, average="weighted", zero_division=0)
+        f1 = f1_score(ground_truth, predictions, average="weighted")
+        # confusion = confusion_matrix(ground_truth, predictions)
+        tn, fp, fn, tp = confusion_matrix(ground_truth, predictions).ravel().tolist()
         logging.info(f"  Session F1 Score (weighted): {f1:.4f}")
+        logging.info(f"{tn=} {fp=} {fn=} {tp=}")
 
-        if class_probabilities:
-            try:
-                y_true_sess = np.array(ground_truth)
-                y_score_sess = np.array(class_probabilities)
+        # if class_probabilities:
+        #     try:
+        #         y_true_sess = np.array(ground_truth)
+        #         y_score_sess = np.array(class_probabilities)
 
-                if y_score_sess.ndim == 2 and y_score_sess.shape[1] == 2:
-                    auc = roc_auc_score(y_true_sess, y_score_sess[:, 1])
-                    logging.info(f"  Session AUC Score: {auc:.4f}")
-                else:
-                    auc = roc_auc_score(
-                        y_true_sess,
-                        y_score_sess,
-                        multi_class="ovr",
-                        average="weighted",
-                    )
-                    logging.info(f"  Session AUC Score (weighted OVR): {auc:.4f}")
-            except ValueError as e:
-                logging.warning(f"  Could not calculate session AUC score: {e}")
+        #         if y_score_sess.ndim == 2 and y_score_sess.shape[1] == 2:
+        #             auc = roc_auc_score(y_true_sess, y_score_sess[:, 1])
+        #             logging.info(f"  Session AUC Score: {auc:.4f}")
+        #         else:
+        #             auc = roc_auc_score(
+        #                 y_true_sess,
+        #                 y_score_sess,
+        #                 multi_class="ovr",
+        #                 average="weighted",
+        #             )
+        #             logging.info(f"  Session AUC Score (weighted OVR): {auc:.4f}")
+        #     except ValueError as e:
+        #         logging.warning(f"  Could not calculate session AUC score: {e}")
 
         # Aggregate results
         all_predictions_agg.extend(predictions)
         all_ground_truth_agg.extend(ground_truth)
         all_probabilities_agg.extend(probabilities)
-        all_class_probabilities_agg.extend(class_probabilities)
+        # all_class_probabilities_agg.extend(class_probabilities)
 
     if not all_ground_truth_agg:
         logging.warning("No data to evaluate across all sessions.")
         return
 
     # Final aggregate stats
-    logging.info("=" * 20)
-    logging.info("Aggregate Evaluation Results")
-    logging.info("=" * 20)
+    # logging.info("=" * 20)
+    # logging.info("Aggregate Evaluation Results")
+    # logging.info("=" * 20)
 
-    final_f1 = f1_score(
-        all_ground_truth_agg, all_predictions_agg, average="weighted", zero_division=0
-    )
-    logging.info(f"Overall F1 Score (weighted): {final_f1:.4f}")
+    # final_f1 = f1_score(
+    #     all_ground_truth_agg, all_predictions_agg, average="weighted", zero_division=0
+    # )
+    # logging.info(f"Overall F1 Score (weighted): {final_f1:.4f}")
 
-    if all_class_probabilities_agg:
-        try:
-            y_true_agg = np.array(all_ground_truth_agg)
-            y_score_agg = np.array(all_class_probabilities_agg)
-            if y_score_agg.ndim == 2 and y_score_agg.shape[1] == 2:
-                final_auc = roc_auc_score(y_true_agg, y_score_agg[:, 1])
-                logging.info(f"Overall AUC Score: {final_auc:.4f}")
-            else:
-                final_auc = roc_auc_score(
-                    y_true_agg,
-                    y_score_agg,
-                    multi_class="ovr",
-                    average="weighted",
-                )
-                logging.info(f"Overall AUC Score (weighted OVR): {final_auc:.4f}")
-        except ValueError as e:
-            logging.warning(f"Could not calculate overall AUC score: {e}")
+    # if all_class_probabilities_agg:
+    #     try:
+    #         y_true_agg = np.array(all_ground_truth_agg)
+    #         y_score_agg = np.array(all_class_probabilities_agg)
+    #         if y_score_agg.ndim == 2 and y_score_agg.shape[1] == 2:
+    #             final_auc = roc_auc_score(y_true_agg, y_score_agg[:, 1])
+    #             logging.info(f"Overall AUC Score: {final_auc:.4f}")
+    #         else:
+    #             final_auc = roc_auc_score(
+    #                 y_true_agg,
+    #                 y_score_agg,
+    #                 multi_class="ovr",
+    #                 average="weighted",
+    #             )
+    #             logging.info(f"Overall AUC Score (weighted OVR): {final_auc:.4f}")
+    #     except ValueError as e:
+    #         logging.warning(f"Could not calculate overall AUC score: {e}")
 
 
 def main(argv: Optional[List[str]] = None) -> None:

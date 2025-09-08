@@ -26,7 +26,7 @@ windowing:
   step_sizes:
     PARTIAL_FIT: 750
     COLLECT_FOR_TRAIN: 750
-    PREDICT: 750
+    PREDICT: 375
 
 event_ids:
   WELCOME_TIMER: 1
@@ -83,6 +83,8 @@ states:
   PrepareToAdaptation:
     accepted_events:
       REST: RestAdaptation
+    # data_collection_group: ADAPTATION
+    # on_exit_actions: [PARTIAL_FIT]
   
   RestAdaptation:
     accepted_events:
@@ -95,6 +97,7 @@ states:
     accepted_events:
       MOVE_LEFT: MoveAdaptation
       MOVE_RIGHT: MoveAdaptation
+    # data_collection_group: ADAPTATION
   
   MoveAdaptation:
     accepted_events:
@@ -107,6 +110,9 @@ states:
   RehabDesc:
     accepted_events:
       REST: RestInference
+    # data_collection_group: INFERENCE
+    # on_exit_actions: [PREDICT]
+    # on_entry_actions: [PARTIAL_FIT]
 
   RestInference:
     accepted_events:

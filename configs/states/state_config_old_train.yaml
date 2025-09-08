@@ -46,6 +46,9 @@ states:
       POINT: Imagery
       REST: Rest
       VAS: Idle2
+      IMAGE_LEFT: Imagery
+      IMAGE_RIGHT: Imagery
+      BACKGROUND: Idle2
 
   EyeWarmupDesc:
     accepted_events:

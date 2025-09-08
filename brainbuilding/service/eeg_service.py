@@ -61,7 +61,7 @@ class ClassificationResult:
     probability: float
     processing_time: float
     ground_truth_labels: Optional[List[int]] = None
-    all_probabilities: Optional[List[float]] = None
+    ground_truth_label: Optional[float] = None
 
 
 DEBUG = False
@@ -132,6 +132,7 @@ def process_window_in_pool(
     start_time = time.time()
 
     ground_truth_labels = sturctured_window_data["ground_truth_labels"][0].tolist()
+    ground_truth_label = sturctured_window_data["label"][0].tolist()
 
     prediction_result = pipeline_config.predict(sturctured_window_data, fitted_components)
     processing_time = time.time() - start_time
@@ -153,6 +154,7 @@ def process_window_in_pool(
         probability=probability,
         processing_time=processing_time,
         ground_truth_labels=ground_truth_labels,
+        ground_truth_label=ground_truth_label
     )
 
 class StreamManager:
@@ -313,6 +315,7 @@ class StateManager:
         self.logical_group = runtime.logical_group_enum
         self.states = runtime.states
         self.current_state = list(runtime.processing_state_enum)[0]
+        self.visited_state_names = [(self.states[self.current_state].name, "")]
         self._state_visit_counter = 0
         # Initialize grouped buffers for dynamic groups
         self.grouped_samples = {group: [] for group in self.logical_group}
@@ -378,15 +381,19 @@ class StateManager:
     def handle_events(self, events: List[int]):
         for event in events:
             current_state_def = self.states[self.current_state]
-
+            # TODO: introduce ignored event ids
+            if event == -1:
+                return
             if event in current_state_def.accepted_events:
                 next_state = current_state_def.accepted_events[event]
                 self._transition_to(next_state)
+                self.visited_state_names.append([(next_state.name, event)])
             else:
-                LOG_STATE.debug(
-                    "Event %s not accepted in state %s",
+                raise ValueError(
+                    "Event %s not accepted in state %s.\nStates so far: %s",
                     event,
                     self.current_state.name,
+                    self.visited_state_names
                 )
 
     def _transition_to(self, next_state):
@@ -542,7 +549,7 @@ class StateManager:
             state_visit_id=self._state_visit_counter,
         )
         structured = self._prepare_array_with_metadata(
-            window_data, metadata, group=data_group, labels=self.grouped_labels[data_group]
+            window_data, metadata, labels=self.grouped_labels[data_group]
         )
         op_id = f"fit_{data_group.name}"
 
@@ -619,15 +626,14 @@ class StateManager:
         self,
         window_data: np.ndarray,
         metadata: WindowMetadata,
-        group,
         labels: List[int],
     ):
         dtype = [
             ("sample", window_data.dtype, window_data.shape[1:]),
             ("label", np.int64),
-            ("session_id", np.str_),
+            ("session_id", np.int64),
             ("state_visit_id", np.int64),
-            ("window_id", np.str_),
+            ("window_id", str),
             ("start_timestamp", np.float64),
             ("end_timestamp", np.float64),
             ("ground_truth_labels", np.int64, (len(labels),)),
@@ -635,9 +641,11 @@ class StateManager:
         assert window_data.shape[0] == 1
         array_with_metadata = np.zeros(1, dtype=dtype)
         array_with_metadata["sample"][0] = window_data[0]
-        array_with_metadata["label"][0] = group
-        array_with_metadata["session_id"][0] = metadata.session_id
+        array_with_metadata["label"][0] = self.states[self.current_state].class_label
+        array_with_metadata["session_id"][0] = int(metadata.session_id)
         array_with_metadata["state_visit_id"][0] = metadata.state_visit_id
+        # TODO: there are some issues with saving strings in structured array
+        # we need to fix this
         array_with_metadata["window_id"][0] = metadata.window_id
         array_with_metadata["start_timestamp"][0] = metadata.start_timestamp
         array_with_metadata["end_timestamp"][0] = metadata.end_timestamp
@@ -662,7 +670,7 @@ class StateManager:
             state_visit_id=self._state_visit_counter,
         )
         window_with_metadata = self._prepare_array_with_metadata(
-            window_data, window_metadata, group=group, labels=labels
+            window_data, window_metadata, labels=labels
         )
         future = self.submit_map[action](window_with_metadata)
         future.add_done_callback(self.callback_map[action])
@@ -951,40 +959,6 @@ class EEGEvaluationRunner:
         if eeg is None or evs is None:
             raise RuntimeError("EEGEvaluationRunner: EEG or Events stream missing")
 
-        def _process_window_for_eval(
-            sturctured_window_data: np.ndarray,
-            fitted_components: Dict[str, Any],
-            pipeline_config: PipelineConfig,
-        ) -> Optional[ClassificationResult]:
-            """Custom processing function for evaluation that extracts full probabilities."""
-            start_time = time.time()
-
-            pipeline_minus_classifier = PipelineConfig(steps=pipeline_config.steps[:-1])
-            features = pipeline_minus_classifier.predict(
-                sturctured_window_data, fitted_components
-            )
-
-            classifier = fitted_components.get("classifier")
-            if not classifier:
-                return None
-
-            probabilities = classifier.predict_proba(features)[0]
-            pred_idx = np.argmax(probabilities)
-            prediction = classifier.classes_[pred_idx]
-            confidence = probabilities[pred_idx]
-            processing_time = time.time() - start_time
-            ground_truth_labels = sturctured_window_data["ground_truth_labels"][
-                0
-            ].tolist()
-
-            return ClassificationResult(
-                prediction=prediction,
-                probability=confidence,
-                processing_time=processing_time,
-                ground_truth_labels=ground_truth_labels,
-                all_probabilities=probabilities.tolist(),
-            )
-
         # Build executor/manager
         executor = SynchronousExecutor()
         queue: mp.Queue = mp.Queue()
@@ -994,7 +968,6 @@ class EEGEvaluationRunner:
             queue=queue,
             state_config_path=self.state_config_path,
             session_id=session_id,
-            process_fn=_process_window_for_eval,
         )
         sm.fitted_components.update(self.pretrained_components)
         sm.pipeline_ready = sm._have_all_components()
@@ -1020,7 +993,7 @@ class EEGEvaluationRunner:
         all_predictions = []
         all_ground_truth = []
         all_probabilities = []
-        all_class_probabilities_agg = []
+        # all_class_probabilities_agg = []
         while not queue.empty():
             result = ClassificationResult(**queue.get())
             if result.ground_truth_labels:
@@ -1030,7 +1003,7 @@ class EEGEvaluationRunner:
 
                 all_probabilities.append(result.probability)
 
-                if result.all_probabilities:
-                    all_class_probabilities_agg.append(result.all_probabilities)
+                # if result.all_probabilities:
+                #     all_class_probabilities_agg.append(result.all_probabilities)
 
-        return all_predictions, all_ground_truth, all_probabilities, all_class_probabilities_agg
+        return all_predictions, all_ground_truth, all_probabilities

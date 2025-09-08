@@ -90,7 +90,11 @@ class PipelineConfig:
             # Apply forward using column-aware wrapping where needed
             if step.use_column is None:
                 apply_fn = getattr(component, step.apply_method)
-                current = apply_fn(current)
+                try:
+                    current = apply_fn(current)
+                except ValueError:
+                    LOG_PIPELINE.error(f"Error applying {step.name} during partial-fit")
+                    return updated_components
             else:
                 if step.apply_method in ("transform", "fit_transform"):
                     wrapper = StructuredColumnTransformer(
@@ -98,7 +102,11 @@ class PipelineConfig:
                         transformer=component,
                     )
                     apply_fn = getattr(wrapper, step.apply_method)
-                    current = apply_fn(current)
+                    try:
+                        current = apply_fn(current)
+                    except:
+                        LOG_PIPELINE.error(f"Error applying {step.name} to {current.shape}")
+                        return updated_components
                 else:
                     # TODO: raise error may be?
                     LOG_PIPELINE.error(
@@ -107,7 +115,7 @@ class PipelineConfig:
                             "transform/fit_transform. Returning empty components"
                         )
                     )
-                    return {}
+                    return updated_components
 
         return updated_components
 
@@ -337,6 +345,38 @@ class PipelineConfig:
                         )
 
         return fitted
+
+    def apply_training(self, data: np.ndarray, fitted_components: Dict[str, Any]) -> np.ndarray:
+        current: np.ndarray = data
+        for step in self.steps:
+            component = fitted_components.get(step.name, None)
+
+            if component is None and step.requires_fit:
+                raise ValueError(f"Component {step.name} is None")
+            elif component is None:
+                init_kwargs = step.init_params or {}
+                component = step.component_class(**init_kwargs)
+            if step.use_column is None:
+                apply_fn = getattr(component, step.apply_method)
+                current = apply_fn(current)
+            else:
+                if step.apply_method in ("transform", "fit_transform"):
+                    wrapper = StructuredColumnTransformer(
+                        column=step.use_column,
+                        transformer=component,
+                    )
+                    apply_fn = getattr(wrapper, step.apply_method)
+                    current = apply_fn(current)
+                else:
+                    raise ValueError(
+                        (
+                            "Component requires column application but lacks "
+                            "transform/fit_transform"
+                        )
+                    )
+
+        return current
+        
 
 # -----------------------------
 # YAML-driven pipeline loading
