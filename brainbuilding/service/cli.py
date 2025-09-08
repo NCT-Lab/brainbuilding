@@ -31,7 +31,7 @@ from brainbuilding.core.config import (
 )
 from brainbuilding.service.pipeline import load_pipeline_from_yaml
 from brainbuilding.service.eeg_service import StateCheckRunner, EEGEvaluationRunner
-from sklearn.metrics import f1_score, r2_score
+from sklearn.metrics import f1_score, roc_auc_score
 
 
 def setup_logging(log_level: str = "INFO", log_file: Optional[str] = None) -> None:
@@ -346,7 +346,7 @@ def evaluate(
     all_predictions_agg = []
     all_ground_truth_agg = []
     all_probabilities_agg = []
-    all_true_ratios_agg = []
+    all_class_probabilities_agg = []
 
     for sess_dir in sorted(session_dirs):
         sess_id = os.path.basename(sess_dir)
@@ -360,7 +360,7 @@ def evaluate(
             predictions,
             ground_truth,
             probabilities,
-            true_ratios,
+            class_probabilities,
         ) = runner.run_from_xdf(xdf_path, session_id=sess_id)
 
         if not ground_truth:
@@ -371,18 +371,30 @@ def evaluate(
         f1 = f1_score(ground_truth, predictions, average="weighted", zero_division=0)
         logging.info(f"  Session F1 Score (weighted): {f1:.4f}")
 
-        if true_ratios:
+        if class_probabilities:
             try:
-                r2 = r2_score(true_ratios, probabilities)
-                logging.info(f"  Session R2 Score: {r2:.4f}")
+                y_true_sess = np.array(ground_truth)
+                y_score_sess = np.array(class_probabilities)
+
+                if y_score_sess.ndim == 2 and y_score_sess.shape[1] == 2:
+                    auc = roc_auc_score(y_true_sess, y_score_sess[:, 1])
+                    logging.info(f"  Session AUC Score: {auc:.4f}")
+                else:
+                    auc = roc_auc_score(
+                        y_true_sess,
+                        y_score_sess,
+                        multi_class="ovr",
+                        average="weighted",
+                    )
+                    logging.info(f"  Session AUC Score (weighted OVR): {auc:.4f}")
             except ValueError as e:
-                logging.warning(f"  Could not calculate session R2 score: {e}")
+                logging.warning(f"  Could not calculate session AUC score: {e}")
 
         # Aggregate results
         all_predictions_agg.extend(predictions)
         all_ground_truth_agg.extend(ground_truth)
         all_probabilities_agg.extend(probabilities)
-        all_true_ratios_agg.extend(true_ratios)
+        all_class_probabilities_agg.extend(class_probabilities)
 
     if not all_ground_truth_agg:
         logging.warning("No data to evaluate across all sessions.")
@@ -398,12 +410,23 @@ def evaluate(
     )
     logging.info(f"Overall F1 Score (weighted): {final_f1:.4f}")
 
-    if all_true_ratios_agg:
+    if all_class_probabilities_agg:
         try:
-            final_r2 = r2_score(all_true_ratios_agg, all_probabilities_agg)
-            logging.info(f"Overall R2 Score: {final_r2:.4f}")
+            y_true_agg = np.array(all_ground_truth_agg)
+            y_score_agg = np.array(all_class_probabilities_agg)
+            if y_score_agg.ndim == 2 and y_score_agg.shape[1] == 2:
+                final_auc = roc_auc_score(y_true_agg, y_score_agg[:, 1])
+                logging.info(f"Overall AUC Score: {final_auc:.4f}")
+            else:
+                final_auc = roc_auc_score(
+                    y_true_agg,
+                    y_score_agg,
+                    multi_class="ovr",
+                    average="weighted",
+                )
+                logging.info(f"Overall AUC Score (weighted OVR): {final_auc:.4f}")
         except ValueError as e:
-            logging.warning(f"Could not calculate overall R2 score: {e}")
+            logging.warning(f"Could not calculate overall AUC score: {e}")
 
 
 def main(argv: Optional[List[str]] = None) -> None:

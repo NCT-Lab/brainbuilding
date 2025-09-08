@@ -26,7 +26,7 @@ windowing:
   step_sizes:
     PARTIAL_FIT: 750
     COLLECT_FOR_TRAIN: 750
-    PREDICT: 250
+    PREDICT: 750
 
 event_ids:
   WELCOME_TIMER: 1
@@ -107,12 +107,13 @@ states:
   RehabDesc:
     accepted_events:
       REST: RestInference
+    data_collection_group: INFERENCE
+    on_exit_actions: [PREDICT]
 
   RestInference:
     accepted_events:
       ATTENTION: AttentionInference
     data_collection_group: INFERENCE
-    on_entry_actions: [PREDICT]
 
   AttentionInference:
     accepted_events:
@@ -131,4 +132,5 @@ states:
     accepted_events:
       REST: RestInference
       BACKGROUND: Idle
+    data_collection_group: INFERENCE
     on_entry_actions: [PREDICT]

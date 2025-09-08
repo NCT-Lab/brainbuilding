@@ -61,6 +61,7 @@ class ClassificationResult:
     probability: float
     processing_time: float
     ground_truth_labels: Optional[List[int]] = None
+    all_probabilities: Optional[List[float]] = None
 
 
 DEBUG = False
@@ -132,11 +133,12 @@ def process_window_in_pool(
 
     ground_truth_labels = sturctured_window_data["ground_truth_labels"][0].tolist()
 
-    prediction = pipeline_config.predict(sturctured_window_data, fitted_components)
+    prediction_result = pipeline_config.predict(sturctured_window_data, fitted_components)
     processing_time = time.time() - start_time
 
-    if prediction is not None:
-        prediction, probability = prediction[0]
+    if prediction_result is not None:
+        # [[pred, conf]]
+        prediction, probability = prediction_result[0]
     else:
         return None
 
@@ -257,9 +259,11 @@ class StateManager:
         queue: mp.Queue,
         state_config_path: str,
         session_id: Optional[str] = None,
+        process_fn: Callable = process_window_in_pool,
     ):
         self.pipeline_config = pipeline_config
         self.executor = executor
+        self.process_fn = process_fn
 
         self.processed_samples: List[np.ndarray] = []
         self.samples_timestamps: List[float] = []
@@ -348,7 +352,7 @@ class StateManager:
             ),
             TransitionAction.PREDICT: (
                 lambda data: self.executor.submit(
-                    process_window_in_pool,
+                    self.process_fn,
                     data,
                     self.fitted_components.copy(),
                     self.pipeline_config,
@@ -923,7 +927,7 @@ class EEGEvaluationRunner:
 
     def run_from_xdf(
         self, xdf_path: str, session_id: str
-    ) -> Tuple[List[int], List[int], List[float], List[float]]:
+    ) -> Tuple[List[int], List[int], List[float], List[List[float]]]:
         from pyxdf import load_xdf  # type: ignore
 
         LOG_STATE.setLevel("ERROR")
@@ -947,6 +951,40 @@ class EEGEvaluationRunner:
         if eeg is None or evs is None:
             raise RuntimeError("EEGEvaluationRunner: EEG or Events stream missing")
 
+        def _process_window_for_eval(
+            sturctured_window_data: np.ndarray,
+            fitted_components: Dict[str, Any],
+            pipeline_config: PipelineConfig,
+        ) -> Optional[ClassificationResult]:
+            """Custom processing function for evaluation that extracts full probabilities."""
+            start_time = time.time()
+
+            pipeline_minus_classifier = PipelineConfig(steps=pipeline_config.steps[:-1])
+            features = pipeline_minus_classifier.predict(
+                sturctured_window_data, fitted_components
+            )
+
+            classifier = fitted_components.get("classifier")
+            if not classifier:
+                return None
+
+            probabilities = classifier.predict_proba(features)[0]
+            pred_idx = np.argmax(probabilities)
+            prediction = classifier.classes_[pred_idx]
+            confidence = probabilities[pred_idx]
+            processing_time = time.time() - start_time
+            ground_truth_labels = sturctured_window_data["ground_truth_labels"][
+                0
+            ].tolist()
+
+            return ClassificationResult(
+                prediction=prediction,
+                probability=confidence,
+                processing_time=processing_time,
+                ground_truth_labels=ground_truth_labels,
+                all_probabilities=probabilities.tolist(),
+            )
+
         # Build executor/manager
         executor = SynchronousExecutor()
         queue: mp.Queue = mp.Queue()
@@ -956,6 +994,7 @@ class EEGEvaluationRunner:
             queue=queue,
             state_config_path=self.state_config_path,
             session_id=session_id,
+            process_fn=_process_window_for_eval,
         )
         sm.fitted_components.update(self.pretrained_components)
         sm.pipeline_ready = sm._have_all_components()
@@ -981,19 +1020,17 @@ class EEGEvaluationRunner:
         all_predictions = []
         all_ground_truth = []
         all_probabilities = []
-        all_true_ratios = []
+        all_class_probabilities_agg = []
         while not queue.empty():
             result = ClassificationResult(**queue.get())
             if result.ground_truth_labels:
-                all_predictions.extend(
-                    [result.prediction] * len(result.ground_truth_labels)
-                )
-                all_ground_truth.extend(result.ground_truth_labels)
+                window_ground_truth = int(np.round(np.mean(result.ground_truth_labels)))
+                all_ground_truth.append(window_ground_truth)
+                all_predictions.append(result.prediction)
 
-                true_ratio = result.ground_truth_labels.count(
-                    result.prediction
-                ) / len(result.ground_truth_labels)
-                all_true_ratios.append(true_ratio)
                 all_probabilities.append(result.probability)
 
-        return all_predictions, all_ground_truth, all_probabilities, all_true_ratios
+                if result.all_probabilities:
+                    all_class_probabilities_agg.append(result.all_probabilities)
+
+        return all_predictions, all_ground_truth, all_probabilities, all_class_probabilities_agg
