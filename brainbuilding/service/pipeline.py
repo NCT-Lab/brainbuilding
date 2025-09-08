@@ -9,6 +9,7 @@ from brainbuilding.core.transformers import (
     StructuredColumnTransformer,
     StructuredToArray,
     CustomSVC,
+    Resampler,
 )
 
 
@@ -390,6 +391,7 @@ COMPONENT_REGISTRY: Dict[str, Type] = {
         "StructuredArrayBuilder": StructuredArrayBuilder,
         "ParallelTransportTransformer": ParallelTransportTransformer,
         "StructuredToArray": StructuredToArray,
+        "Resampler": Resampler,
         # Feature extraction / models
         "CSP": CSP,
         "SVC": SVC,

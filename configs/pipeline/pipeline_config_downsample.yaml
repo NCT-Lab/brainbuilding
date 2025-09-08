@@ -1,0 +1,80 @@
+steps:
+  - name: resampler
+    component: Resampler
+    calibration: true
+    requires_fit: false
+    use_column: sample
+    init_params:
+      sfreq: 500
+      target_sfreq: 250
+
+  - name: ica
+    component: EyeRemoval
+    calibration: true
+    requires_fit: true
+    use_column: sample
+    init_params:
+      n_components: null
+      remove_veog: true
+      remove_heog: true
+      random_state: 42
+
+  - name: whitening
+    component: SimpleWhiteningTransformer
+    calibration: true
+    requires_fit: true
+    use_column: sample
+    init_params:
+      n_channels: 18
+
+  - name: augmentation
+    component: AugmentedDataset
+    calibration: true
+    requires_fit: false
+    use_column: sample
+    init_params:
+      order: 4
+      lag: 8
+
+  - name: covariance
+    component: Covariances
+    calibration: true
+    requires_fit: false
+    use_column: sample
+    init_params:
+      estimator: oas
+
+  - name: pt
+    component: ParallelTransportTransformer
+    requires_fit: true
+    init_params:
+      include_means: false
+      prevent_subject_drift: true
+      subject_min_samples_for_transform: 5
+
+  - name: from_structured
+    component: StructuredToArray
+    requires_fit: false
+    init_params:
+      field: sample
+
+  - name: csp
+    component: CSP
+    requires_fit: true
+    pass_class_label: true
+    init_params:
+      nfilter: 10
+      log: true
+      metric: riemann
+
+  - name: classifier
+    component: CustomSVC
+    requires_fit: true
+    apply_method: predict_label_and_confidence
+    pass_class_label: true
+    init_params:
+      kernel: rbf
+      C: 0.696
+      gamma: 0.035
+      class_weight: null
+      probability: true

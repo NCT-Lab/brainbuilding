@@ -18,6 +18,62 @@ from pyriemann.utils.tangentspace import upper, unupper  # type: ignore
 from functools import partial
 from sklearn.neighbors import KNeighborsClassifier  # type: ignore
 from sklearn.svm import SVC  # type: ignore
+from scipy.signal import decimate
+
+
+class Resampler(BaseEstimator, TransformerMixin):
+    """
+    A scikit-learn transformer that resamples the input signal to a target
+    sampling frequency using scipy's decimation.
+    """
+
+    def __init__(self, sfreq: float, target_sfreq: float):
+        self.sfreq = sfreq
+        self.target_sfreq = target_sfreq
+        if self.sfreq % self.target_sfreq != 0:
+            raise ValueError("Target frequency must be a divisor of the original frequency.")
+        self.q = int(self.sfreq / self.target_sfreq)
+
+    def fit(self, X: np.ndarray, y: Optional[np.ndarray] = None) -> "Resampler":
+        """
+        Fit method (does nothing, just returns self).
+
+        Returns
+        -------
+        self : Resampler
+            The fitted transformer
+        """
+        return self
+
+    def transform(self, X: np.ndarray) -> np.ndarray:
+        """
+        Resamples the input signal X.
+
+        Parameters
+        ----------
+        X : ndarray, shape (n_samples, n_channels, n_times) or (n_channels, n_times)
+            The input signal to be resampled.
+
+        Returns
+        -------
+        ndarray
+            The resampled signal.
+        """
+        if self.q == 1:
+            return X
+            
+        if X.ndim not in [2, 3]:
+            raise ValueError(f"Unsupported number of dimensions: {X.ndim}")
+
+        return decimate(X, self.q, axis=-1, ftype='fir', zero_phase=True)
+
+    def fit_transform(
+        self, X: np.ndarray, y: Optional[np.ndarray] = None
+    ) -> np.ndarray:
+        """
+        Fit the transformer and transform the data.
+        """
+        return self.fit(X, y).transform(X)
 
 
 # @njit(nopython=True)
