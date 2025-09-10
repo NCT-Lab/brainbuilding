@@ -16,52 +16,56 @@ You can run any command without activating the venv using `uv run`:
 uv run python -V
 ```
 
-### Train models (PT/CSP/SVC) from raw data
-This builds the dataset from `data/raw-dataset-2` and saves artifacts to `models/`.
-```bash
-uv run python -m brainbuilding.service.cli train \
-  --raw-data-dir data/raw-dataset-2 \
-  --output-dir models
-```
-Artifacts produced:
-- `models/pt.joblib`
-- `models/csp.joblib`
-- `models/classifier.joblib`
 
-### Launch realtime service
-Start the service with preloaded components and default TCP settings (127.0.0.1:12345):
-```bash
-uv run python -m brainbuilding.service.cli \
-  --preload-dir models
-```
-Notes:
-- Expects LSL streams named `NeoRec21-1247` (EEG) and `Brainbuilding-Events` (events).
-- Sends results over TCP to 127.0.0.1:12345 by default.
+### Usage
 
-### Mock TCP server (receiver)
-Listen for realtime results locally:
+All commands should be run from the project root.
+
+#### Running the Service (Real-time Processing)
+
+To start the real-time EEG service for live data processing from an LSL stream, use the `serve` command:
+
 ```bash
-uv run python scripts/mocks/tcp_server.py
+uv run python brainbuilding/service/cli.py serve --pipeline-config-path <path_to_pipeline_config> --state-config-path <path_to_state_config> --sfreq <sfreq>
 ```
 
-### Mock LSL endpoint (replay XDF + events)
-Replays the XDF and emits event codes from the `Task.json` timeline:
+#### Training
+
+To train the pipeline components on recorded data, use the `train` command. Trained models are saved to the `models/` directory by default.
+
 ```bash
-uv run python scripts/mocks/mock_lsl_endpoint.py
+uv run python brainbuilding/service/cli.py train --sessions-root <path_to_data> --pipeline-config-path <path_to_pipeline_config> --state-config-path <path_to_state_config> --sfreq <sfreq>
 ```
 
-Recommended startup order for local testing:
-1) Mock TCP server
-2) Mock LSL endpoint
-3) Realtime service
+#### Evaluation
 
-### Event codes
-The service consumes numeric event codes via LSL:
-- 1: EyeWarmupDesc
-- 2: EyeWarmupBlink
-- 3: EyeWarmupText
-- 4: EyeWarmupMove
-- 5: Background
-- 10: Task period (Rest/Attention/Image/Point/Vas)
+To evaluate a trained pipeline on offline data, use the `evaluate` command:
+
+```bash
+uv run python brainbuilding/service/cli.py evaluate --sessions-root <path_to_data> --pipeline-config-path <path_to_pipeline_config> --state-config-path <path_to_state_config>
+```
+
+### Configuration Files
+
+Service behavior is defined by YAML configuration files in the `configs/` directory.
+
+#### Pipeline Configs (`configs/pipeline/`)
+
+These files define the signal processing steps.
+
+-   `pipeline_config.yaml`: For data sampled at 250Hz.
+-   `pipeline_config_downsample.yaml`: For data sampled at 500Hz (includes a downsampling step).
+
+#### State Machine Configs (`configs/states/`)
+
+These files control when and how data is processed based on experimental events.
+
+-   **Old dataset:**
+    -   `state_config_old_train.yaml`: Use for training.
+    -   `state_config_old.yaml`: Use for evaluation.
+-   **New dataset:**
+    -   `state_config_new.yaml`: Runs inference only during core rest and motor imagery phases.
+    -   `state_config_new_inference_all.yaml`: Runs inference during all motor imagery-related phases, including intermediate focus and feedback periods.
+
 
 
