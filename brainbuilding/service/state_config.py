@@ -19,6 +19,9 @@ class StateMachineRuntime:
     states: Dict[IntEnum, StateDefinition]
     window_size: int
     step_size_by_action: Dict[TransitionAction, int]
+    # Global per-action startup delays in seconds (from YAML). Conversion to
+    # samples is done at runtime based on sfreq.
+    start_delay_seconds_by_action: Dict[TransitionAction, float]
 
 
 class StateConfig(BaseModel):
@@ -68,6 +71,9 @@ class StateMachineConfig(BaseModel):
     _step_by_action: Dict[TransitionAction, int] = PrivateAttr(
         default_factory=dict
     )
+    _delay_secs_by_action: Dict[TransitionAction, float] = PrivateAttr(
+        default_factory=dict
+    )
 
     @model_validator(mode="after")
     def _finalize(self) -> "StateMachineConfig":
@@ -82,6 +88,15 @@ class StateMachineConfig(BaseModel):
                     f"Unknown action in step_sizes: {action_name}"
                 )
             self._step_by_action[TransitionAction[action_name]] = int(step_val)
+        # Initialize per-action delays to 0.0s for all actions, then override
+        # from config where provided.
+        self._delay_secs_by_action = {action: 0.0 for action in TransitionAction}
+        for action_name, delay_val in self.windowing.start_delays_seconds.items():
+            if action_name not in TransitionAction.__members__:
+                raise ValueError(
+                    f"Unknown action in start_delays_seconds: {action_name}"
+                )
+            self._delay_secs_by_action[TransitionAction[action_name]] = float(delay_val)
         return self
 
     # TODO: надо все это дело нормально переписать без этой императивщины
@@ -134,6 +149,7 @@ class StateMachineConfig(BaseModel):
             states=states_rt,
             window_size=self._window_size,
             step_size_by_action=self._step_by_action,
+            start_delay_seconds_by_action=self._delay_secs_by_action,
         )
 
 
@@ -143,6 +159,8 @@ class WindowingConfig(BaseModel):
     )
     # Mapping of TransitionAction names -> step size integers
     step_sizes: Dict[str, int] = Field(default_factory=dict)
+    # Mapping of TransitionAction names -> startup delay in seconds
+    start_delays_seconds: Dict[str, float] = Field(default_factory=dict)
 
 
 # -----------------------------

@@ -18,6 +18,7 @@ from brainbuilding.core.config import (
     DEFAULT_TCP_HOST,
     DEFAULT_TCP_PORT,
     DEFAULT_TCP_RETRIES,
+    DEFAULT_SFREQ,
 )
 
 
@@ -243,12 +244,14 @@ class StateManager:
     window_action_last_index: Dict[TransitionAction, Dict[IntEnum, int]]
     window_action_window_size: int
     window_action_step_size: Dict[TransitionAction, int]
+    window_action_delay_samples: Dict[TransitionAction, int]
     window_action_executor: Dict[TransitionAction, Callable[[], None]]
     window_action_callbacks: Dict[
         TransitionAction,
         Callable[[IntEnum], Callable[[np.ndarray, List[float]], None]],
     ]
     action_handlers: Dict[TransitionAction, Callable]
+    window_action_enabled_at_index: Dict[TransitionAction, Dict[IntEnum, int]]
     
     # TODO: надо бы сбрасывать когда сбрасываем логическую группу
     processed_windows_during_state_so_far: int = 0
@@ -262,10 +265,12 @@ class StateManager:
         state_config_path: str,
         session_id: Optional[str] = None,
         process_fn: Callable = process_window_in_pool,
+        sfreq: float = DEFAULT_SFREQ,
     ):
         self.pipeline_config = pipeline_config
         self.executor = executor
         self.process_fn = process_fn
+        self.sfreq = float(sfreq)
 
         self.processed_samples: List[np.ndarray] = []
         self.samples_timestamps: List[float] = []
@@ -334,6 +339,11 @@ class StateManager:
             action: int(step)
             for action, step in runtime.step_size_by_action.items()
         }
+        # Convert configured per-action delays (seconds) to samples using sfreq
+        self.window_action_delay_samples: Dict[TransitionAction, int] = {
+            action: int(round(delay_sec * self.sfreq))
+            for action, delay_sec in runtime.start_delay_seconds_by_action.items()
+        }
 
         # Submitters and callbacks for windowed actions (data-driven)
         self.submit_map: Dict[
@@ -376,6 +386,11 @@ class StateManager:
             TransitionAction.PARTIAL_FIT: self._handle_window_action,
             TransitionAction.PREDICT: self._handle_window_action,
             TransitionAction.COLLECT_FOR_TRAIN: self._handle_window_action,
+        }
+
+        # Track when an action was enabled (per group) to enforce startup delay
+        self.window_action_enabled_at_index = {
+            action: {} for action in TransitionAction
         }
 
     def handle_events(self, events: List[int]):
@@ -586,6 +601,15 @@ class StateManager:
             and data_group is not None
             and self.window_action_last_index[action].setdefault(data_group, 0)
         )
+        if new_active and data_group is not None:
+            # Record absolute enable index to enforce startup delays
+            self.window_action_enabled_at_index[action][
+                data_group
+            ] = len(self.grouped_samples[data_group])
+        else:
+            # Clear enable index on disable to avoid stale gating
+            if data_group is not None and data_group in self.window_action_enabled_at_index[action]:
+                del self.window_action_enabled_at_index[action][data_group]
 
         status = "enabled" if new_active else "disabled"
         suffix = (
@@ -606,6 +630,17 @@ class StateManager:
             self.window_action_last_index[action].get(group, 0) - segment_start,
             0,
         )
+        # Enforce startup delay: require enough samples since action enable
+        delay_needed = self.window_action_delay_samples.get(action, 0)
+        enable_index_abs = self.window_action_enabled_at_index[action].get(group)
+        if enable_index_abs is None:
+            return
+        # Compute how many samples accumulated since enable within current segment
+        current_length_abs = len(self.grouped_samples[group])
+        effective_enable_index = max(enable_index_abs, segment_start)
+        samples_since_enable = current_length_abs - effective_enable_index
+        if samples_since_enable < delay_needed:
+            return
         window_size = self.window_action_window_size
         step_size = self.window_action_step_size[action]
 
@@ -727,6 +762,8 @@ class EEGService:
             self.output_queue,
             state_config_path,
             session_id,
+            process_fn=process_window_in_pool,
+            sfreq=sfreq,
         )
         host = tcp_host if tcp_host is not None else DEFAULT_TCP_HOST
         port = tcp_port if tcp_port is not None else DEFAULT_TCP_PORT
@@ -817,6 +854,8 @@ class EEGOfflineRunner:
             queue=queue,
             state_config_path=self.state_config_path,
             session_id=session_id,
+            process_fn=process_window_in_pool,
+            sfreq=self.sfreq,
         )
         point_processor = PointProcessor(
             sfreq=self.sfreq, n_channels=len(CHANNELS_TO_KEEP)
@@ -891,6 +930,8 @@ class StateCheckRunner:
             executor=executor,
             queue=queue,
             state_config_path=self.state_config_path,
+            process_fn=process_window_in_pool,
+            sfreq=DEFAULT_SFREQ,
         )
 
         actual_states = []
@@ -968,6 +1009,8 @@ class EEGEvaluationRunner:
             queue=queue,
             state_config_path=self.state_config_path,
             session_id=session_id,
+             process_fn=process_window_in_pool,
+             sfreq=self.sfreq,
         )
         sm.fitted_components.update(self.pretrained_components)
         sm.pipeline_ready = sm._have_all_components()
