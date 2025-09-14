@@ -250,6 +250,12 @@ class StateManager:
     ]
     action_handlers: Dict[TransitionAction, Callable]
     
+    @dataclass
+    class ScheduledAction:
+        due_time: float
+        action: TransitionAction
+        group: Optional[IntEnum]
+    
     # TODO: надо бы сбрасывать когда сбрасываем логическую группу
     processed_windows_during_state_so_far: int = 0
     current_window_step: int = 0
@@ -307,6 +313,7 @@ class StateManager:
 
         self._session_id = session_id
         self._state_visit_counter = 0
+        self._scheduled_actions: List[StateManager.ScheduledAction] = []
 
         runtime: StateMachineRuntime = load_state_machine_from_yaml(
             state_config_path
@@ -379,6 +386,7 @@ class StateManager:
         }
 
     def handle_events(self, events: List[int]):
+        self._run_due_scheduled_actions()
         for event in events:
             current_state_def = self.states[self.current_state]
             # TODO: introduce ignored event ids
@@ -395,6 +403,7 @@ class StateManager:
                     self.current_state.name,
                     self.visited_state_names
                 )
+        self._run_due_scheduled_actions()
 
     def _transition_to(self, next_state):
         old_state = self.current_state
@@ -445,6 +454,55 @@ class StateManager:
 
         return trigger_map.get(action, default_group)
 
+    def _resolve_action_delay(
+        self,
+        state_def: StateDefinition,
+        action: TransitionAction,
+        trigger: str,
+        next_state: Optional[IntEnum] = None,
+    ) -> float:
+        if trigger == "transition":
+            by_next = state_def.on_transition_action_delays
+            mapping = by_next.get(next_state, {}) if next_state else {}
+            return float(mapping.get(action, 0.0))
+        if trigger == "entry":
+            return float(state_def.on_entry_action_delays.get(action, 0.0))
+        if trigger == "exit":
+            return float(state_def.on_exit_action_delays.get(action, 0.0))
+        return 0.0
+
+    def _schedule_or_run(
+        self,
+        action: TransitionAction,
+        group: Optional[IntEnum],
+        delay_seconds: float,
+    ) -> None:
+        if delay_seconds <= 0.0:
+            self.action_handlers[action](action, group)
+            return
+        due = time.monotonic() + delay_seconds
+        self._scheduled_actions.append(
+            StateManager.ScheduledAction(due_time=due, action=action, group=group)
+        )
+        LOG_STATE.info(
+            "Scheduled %s in %.3fs%s",
+            action.name,
+            delay_seconds,
+            f" for {group.name}" if group is not None else "",
+        )
+
+    def _run_due_scheduled_actions(self) -> None:
+        if not self._scheduled_actions:
+            return
+        now = time.monotonic()
+        pending: List[StateManager.ScheduledAction] = []
+        for item in self._scheduled_actions:
+            if item.due_time <= now:
+                self.action_handlers[item.action](item.action, item.group)
+            else:
+                pending.append(item)
+        self._scheduled_actions = pending
+
     def _run_actions_for_trigger(
         self,
         state_def: StateDefinition,
@@ -461,11 +519,18 @@ class StateManager:
                 trigger=trigger,
                 next_state=next_state,
             )
-            self.action_handlers[action](action, group)
+            delay = self._resolve_action_delay(
+                state_def=state_def,
+                action=action,
+                trigger=trigger,
+                next_state=next_state,
+            )
+            self._schedule_or_run(action, group, delay)
 
     def add_new_samples(
         self, samples: List[np.ndarray], timestamps: List[float]
     ):
+        self._run_due_scheduled_actions()
         current_state_def = self.states[self.current_state]
         self.processed_samples.extend(samples)
         self.samples_timestamps.extend(timestamps)

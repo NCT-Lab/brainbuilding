@@ -33,3 +33,13 @@ class StateDefinition:
     on_transition_action_groups: Dict[IntEnum, Dict[TransitionAction, IntEnum]] = field(
         default_factory=dict
     )
+    # Per-trigger action delays (seconds)
+    on_entry_action_delays: Dict[TransitionAction, float] = field(
+        default_factory=dict
+    )
+    on_exit_action_delays: Dict[TransitionAction, float] = field(
+        default_factory=dict
+    )
+    on_transition_action_delays: Dict[IntEnum, Dict[TransitionAction, float]] = field(
+        default_factory=dict
+    )

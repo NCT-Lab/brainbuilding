@@ -41,6 +41,10 @@ class StateConfig(BaseModel):
     on_entry_action_groups: Optional[Dict[str, str]] = None
     on_exit_action_groups: Optional[Dict[str, str]] = None
     on_transition_action_groups: Optional[Dict[str, Dict[str, str]]] = None
+    # Per-trigger action delays (seconds)
+    on_entry_action_delays: Optional[Dict[str, float]] = None
+    on_exit_action_delays: Optional[Dict[str, float]] = None
+    on_transition_action_delays: Optional[Dict[str, Dict[str, float]]] = None
     class_label: int = 0
 
 
@@ -127,6 +131,16 @@ class StateMachineConfig(BaseModel):
                     state_name_to_enum[n]: _map_action_groups_names(m, self._group_enum)
                     for n, m in (sc.on_transition_action_groups or {}).items()
                 },
+                on_entry_action_delays=_map_action_delays_names(
+                    sc.on_entry_action_delays
+                ),
+                on_exit_action_delays=_map_action_delays_names(
+                    sc.on_exit_action_delays
+                ),
+                on_transition_action_delays={
+                    state_name_to_enum[n]: _map_action_delays_names(m)
+                    for n, m in (sc.on_transition_action_delays or {}).items()
+                },
             )
         return StateMachineRuntime(
             processing_state_enum=self._proc_enum,
@@ -179,6 +193,24 @@ def _map_action_groups_names(
     result: Dict[TransitionAction, IntEnum] = {}
     for action_name, group_name in mapping.items():
         result[TransitionAction[action_name]] = group_enum[group_name]
+    return result
+
+
+def _map_action_delays_names(
+    mapping: Optional[Dict[str, float]],
+) -> Dict[TransitionAction, float]:
+    if not mapping:
+        return {}
+    result: Dict[TransitionAction, float] = {}
+    for action_name, delay in mapping.items():
+        if action_name not in TransitionAction.__members__:
+            raise ValueError(f"Unknown action in delays: {action_name}")
+        delay_f = float(delay)
+        if delay_f < 0.0:
+            raise ValueError(
+                f"Delay must be >= 0 for action {action_name}, got {delay}"
+            )
+        result[TransitionAction[action_name]] = delay_f
     return result
 
 
