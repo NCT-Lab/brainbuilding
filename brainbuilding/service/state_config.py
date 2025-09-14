@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Type
+from typing import Dict, List, Optional, Type, Union
 from dataclasses import dataclass
 
 from pydantic import BaseModel, Field, PrivateAttr, model_validator  # type: ignore  # noqa: E0401
@@ -34,17 +34,15 @@ class StateConfig(BaseModel):
     )
     # Use string names in YAML, convert to enums later
     data_collection_group: Optional[str] = None
-    on_entry_actions: Optional[List[str]] = None
-    on_exit_actions: Optional[List[str]] = None
-    on_transition_actions: Optional[Dict[str, List[str]]] = None
+    on_entry_actions: Optional[List[Union["ActionSpecModel", str]]] = None
+    on_exit_actions: Optional[List[Union["ActionSpecModel", str]]] = None
+    on_transition_actions: Optional[
+        Dict[str, List[Union["ActionSpecModel", str]]]
+    ] = None
     # Trigger-specific action->group mappings
     on_entry_action_groups: Optional[Dict[str, str]] = None
     on_exit_action_groups: Optional[Dict[str, str]] = None
     on_transition_action_groups: Optional[Dict[str, Dict[str, str]]] = None
-    # Per-trigger action delays (seconds)
-    on_entry_action_delays: Optional[Dict[str, float]] = None
-    on_exit_action_delays: Optional[Dict[str, float]] = None
-    on_transition_action_delays: Optional[Dict[str, Dict[str, float]]] = None
     class_label: int = 0
 
 
@@ -103,10 +101,20 @@ class StateMachineConfig(BaseModel):
                 self.event_ids[event]: state_name_to_enum[next_state]
                 for event, next_state in sc.accepted_events.items()
             }
-            on_trans: Dict[IntEnum, List[TransitionAction]] = {
-                state_name_to_enum[n]: _map_actions_list(a)
-                for n, a in (sc.on_transition_actions or {}).items()
-            }
+            # Inline action specs: build actions and delay mappings
+            entry_actions, entry_delays = _map_action_specs_list(
+                sc.on_entry_actions
+            )
+            exit_actions, exit_delays = _map_action_specs_list(
+                sc.on_exit_actions
+            )
+            on_trans: Dict[IntEnum, List[TransitionAction]] = {}
+            on_trans_delays: Dict[IntEnum, Dict[TransitionAction, float]] = {}
+            for n, a in (sc.on_transition_actions or {}).items():
+                next_enum = state_name_to_enum[n]
+                acts, delays = _map_action_specs_list(a)
+                on_trans[next_enum] = acts
+                on_trans_delays[next_enum] = delays
             states_rt[state_enum] = StateDefinition(
                 name=state_enum,
                 accepted_events=acc_events,
@@ -118,8 +126,8 @@ class StateMachineConfig(BaseModel):
                 )
                 if sc.data_collection_group is not None
                 else None,
-                on_entry_actions=_map_actions_list(sc.on_entry_actions),
-                on_exit_actions=_map_actions_list(sc.on_exit_actions),
+                on_entry_actions=entry_actions,
+                on_exit_actions=exit_actions,
                 on_transition_actions=on_trans,
                 on_entry_action_groups=_map_action_groups_names(
                     sc.on_entry_action_groups, self._group_enum
@@ -131,16 +139,9 @@ class StateMachineConfig(BaseModel):
                     state_name_to_enum[n]: _map_action_groups_names(m, self._group_enum)
                     for n, m in (sc.on_transition_action_groups or {}).items()
                 },
-                on_entry_action_delays=_map_action_delays_names(
-                    sc.on_entry_action_delays
-                ),
-                on_exit_action_delays=_map_action_delays_names(
-                    sc.on_exit_action_delays
-                ),
-                on_transition_action_delays={
-                    state_name_to_enum[n]: _map_action_delays_names(m)
-                    for n, m in (sc.on_transition_action_delays or {}).items()
-                },
+                on_entry_action_delays=entry_delays,
+                on_exit_action_delays=exit_delays,
+                on_transition_action_delays=on_trans_delays,
             )
         return StateMachineRuntime(
             processing_state_enum=self._proc_enum,
@@ -196,22 +197,33 @@ def _map_action_groups_names(
     return result
 
 
-def _map_action_delays_names(
-    mapping: Optional[Dict[str, float]],
-) -> Dict[TransitionAction, float]:
-    if not mapping:
-        return {}
-    result: Dict[TransitionAction, float] = {}
-    for action_name, delay in mapping.items():
-        if action_name not in TransitionAction.__members__:
-            raise ValueError(f"Unknown action in delays: {action_name}")
-        delay_f = float(delay)
-        if delay_f < 0.0:
-            raise ValueError(
-                f"Delay must be >= 0 for action {action_name}, got {delay}"
-            )
-        result[TransitionAction[action_name]] = delay_f
-    return result
+class ActionSpecModel(BaseModel):
+    name: str
+    delay_seconds: float = Field(default=0.0, ge=0.0)
+
+
+def _map_action_specs_list(
+    actions: Optional[List[Union[ActionSpecModel, str]]]
+) -> tuple[List[TransitionAction], Dict[TransitionAction, float]]:
+    if not actions:
+        return [], {}
+    action_list: List[TransitionAction] = []
+    delays: Dict[TransitionAction, float] = {}
+    for item in actions:
+        if isinstance(item, str):
+            if item not in TransitionAction.__members__:
+                raise ValueError(f"Unknown action: {item}")
+            action = TransitionAction[item]
+            delay = 0.0
+        else:
+            if item.name not in TransitionAction.__members__:
+                raise ValueError(f"Unknown action: {item.name}")
+            action = TransitionAction[item.name]
+            delay = float(item.delay_seconds)
+        action_list.append(action)
+        if delay > 0.0:
+            delays[action] = delay
+    return action_list, delays
 
 
 def load_state_machine_from_yaml(path: str) -> StateMachineRuntime:
