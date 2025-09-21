@@ -61,6 +61,10 @@ states:
       BACKGROUND: Background
       EYE_WARMUP_BLINK: EyeWarmupBlink
     data_collection_group: EYE_MOVEMENT
+    on_transition_actions:
+      Background:
+        - name: FIT
+          group: EYE_MOVEMENT
 
   EyeWarmupText:
     accepted_events:
@@ -74,10 +78,9 @@ states:
       BACKGROUND: Background
     data_collection_group: EYE_MOVEMENT
     on_transition_actions:
-      Background: [FIT]
-    on_transition_action_groups:
       Background:
-        FIT: EYE_MOVEMENT
+        - name: FIT
+          group: EYE_MOVEMENT
 
   Background:
     accepted_events:
@@ -87,7 +90,9 @@ states:
       IMAGE_RIGHT: Imagery
       POINT: Imagery
     data_collection_group: BACKGROUND
-    on_exit_actions: [FIT]
+    on_exit_actions:
+      - name: FIT
+        group: BACKGROUND
 
   Rest:
     accepted_events:
@@ -97,8 +102,16 @@ states:
       BACKGROUND: Background
       ATTENTION: Idle2
     data_collection_group: REST
-    on_entry_actions: [COLLECT_FOR_TRAIN, PREDICT]
-    on_exit_actions: [COLLECT_FOR_TRAIN, PREDICT]
+    on_entry_actions:
+      - name: COLLECT_FOR_TRAIN
+        group: REST
+      - name: PREDICT
+        group: REST
+    on_exit_actions:
+      - name: COLLECT_FOR_TRAIN
+        group: REST
+      - name: PREDICT
+        group: REST
 
   Imagery:
     accepted_events:
@@ -106,6 +119,14 @@ states:
       VAS: Idle2
       BACKGROUND: Idle2
     data_collection_group: IMAGERY
-    on_exit_actions: [COLLECT_FOR_TRAIN, PREDICT]
-    on_entry_actions: [COLLECT_FOR_TRAIN, PREDICT]
+    on_exit_actions:
+      - name: COLLECT_FOR_TRAIN
+        group: IMAGERY
+      - name: PREDICT
+        group: IMAGERY
+    on_entry_actions:
+      - name: COLLECT_FOR_TRAIN
+        group: IMAGERY
+      - name: PREDICT
+        group: IMAGERY
     class_label: 1
