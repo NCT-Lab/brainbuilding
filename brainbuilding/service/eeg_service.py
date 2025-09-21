@@ -181,9 +181,9 @@ class StreamManager:
             event_info.type(),
         )
 
-    def pull_events(self):
-        events, _ = self.event_inlet.pull_chunk(timeout=0)
-        return events
+    def pull_events(self) -> tuple[list, list]:
+        events, timestamps = self.event_inlet.pull_chunk(timeout=0)
+        return events, timestamps
 
     def pull_samples(self):
         samples, timestamps = self.eeg_inlet.pull_chunk()
@@ -315,6 +315,7 @@ class StateManager:
         self._session_id = session_id
         self._state_visit_counter = 0
         self._scheduled_actions: List[StateManager.ScheduledAction] = []
+        self.latest_lsl_timestamp: Optional[float] = None
 
         runtime: StateMachineRuntime = load_state_machine_from_yaml(
             state_config_path
@@ -386,7 +387,9 @@ class StateManager:
             TransitionAction.COLLECT_FOR_TRAIN: self._handle_window_action,
         }
 
-    def handle_events(self, events: List[int]):
+    def handle_events(self, events: List[int], timestamps: Optional[List[float]] = None):
+        if timestamps:
+            self.latest_lsl_timestamp = timestamps[-1]
         self._run_due_scheduled_actions()
         for event in events:
             current_state_def = self.states[self.current_state]
@@ -441,19 +444,21 @@ class StateManager:
         action: TransitionAction,
         trigger: str,
         next_state: Optional[IntEnum] = None,
-    ):
-        default_group = state_def.data_collection_group
-        if trigger == "transition":
+    ) -> Optional[IntEnum]:
+        """Resolve group for an action with override -> state default -> None logic."""
+        group_override: Optional[IntEnum] = None
+        if trigger == "transition" and next_state is not None:
             by_next = state_def.on_transition_action_groups
-            actions_map = by_next.get(next_state, {}) if next_state else {}
-            return actions_map.get(action, default_group)
+            group_override = by_next.get(next_state, {}).get(action)
+        elif trigger == "entry":
+            group_override = state_def.on_entry_action_groups.get(action)
+        elif trigger == "exit":
+            group_override = state_def.on_exit_action_groups.get(action)
 
-        trigger_map = {
-            "entry": state_def.on_entry_action_groups,
-            "exit": state_def.on_exit_action_groups,
-        }.get(trigger, {})
+        if group_override is not None:
+            return group_override
 
-        return trigger_map.get(action, default_group)
+        return state_def.data_collection_group
 
     def _resolve_action_delay(
         self,
@@ -481,7 +486,9 @@ class StateManager:
         if delay_seconds <= 0.0:
             self.action_handlers[action](action, group)
             return
-        due = time.monotonic() + delay_seconds
+        if self.latest_lsl_timestamp is None:
+            raise ValueError("Cannot schedule action %s, no LSL timestamp available yet.", action.name)
+        due = self.latest_lsl_timestamp + delay_seconds
         self._scheduled_actions.append(
             StateManager.ScheduledAction(due_time=due, action=action, group=group)
         )
@@ -493,9 +500,9 @@ class StateManager:
         )
 
     def _run_due_scheduled_actions(self) -> None:
-        if not self._scheduled_actions:
+        if not self._scheduled_actions or self.latest_lsl_timestamp is None:
             return
-        now = time.monotonic()
+        now = self.latest_lsl_timestamp
         pending: List[StateManager.ScheduledAction] = []
         for item in self._scheduled_actions:
             if item.due_time <= now:
@@ -531,6 +538,8 @@ class StateManager:
     def add_new_samples(
         self, samples: List[np.ndarray], timestamps: List[float]
     ):
+        if timestamps:
+            self.latest_lsl_timestamp = timestamps[-1]
         self._run_due_scheduled_actions()
         current_state_def = self.states[self.current_state]
         self.processed_samples.extend(samples)
@@ -806,10 +815,10 @@ class EEGService:
         self.tcp_sender.start()
         while True:
             try:
-                events = self.stream_manager.pull_events()
+                events, event_timestamps = self.stream_manager.pull_events()
                 if events:
                     self.state_manager.handle_events(
-                        [e[TRIGGER_CODE_INDEX] for e in events]
+                        [e[TRIGGER_CODE_INDEX] for e in events], event_timestamps
                     )
                 samples, timestamps = self.stream_manager.pull_samples()
                 if samples:
@@ -905,7 +914,7 @@ class EEGOfflineRunner:
             if sample_label == 'eeg':
                 sm.add_new_samples(sample[None, ...], [sample_timestamp])
             else:
-                sm.handle_events([sample[TRIGGER_CODE_INDEX]])
+                sm.handle_events([sample[TRIGGER_CODE_INDEX]], [sample_timestamp])
 
         executor.shutdown(wait=True)
         return list(sm.collected_calibrated)
@@ -960,10 +969,11 @@ class StateCheckRunner:
         )
 
         actual_states = []
-        for event_data in evs["time_series"]:
+        for i, event_data in enumerate(evs["time_series"]):
             old_state = sm.current_state
             event_code = int(event_data[TRIGGER_CODE_INDEX])
-            sm.handle_events([event_code])
+            event_timestamp = evs["time_stamps"][i]
+            sm.handle_events([event_code], [event_timestamp])
             new_state = sm.current_state
             if new_state is not old_state:
                 actual_states.append(new_state.name)
@@ -1052,7 +1062,7 @@ class EEGEvaluationRunner:
             if sample_label == 'eeg':
                 sm.add_new_samples(sample[None, ...], [sample_timestamp])
             else:
-                sm.handle_events([sample[TRIGGER_CODE_INDEX]])
+                sm.handle_events([sample[TRIGGER_CODE_INDEX]], [sample_timestamp])
 
         executor.shutdown(wait=True)
 

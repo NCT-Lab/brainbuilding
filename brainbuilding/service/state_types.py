@@ -13,17 +13,23 @@ class TransitionAction(IntEnum):
     COLLECT_FOR_TRAIN = 4
 
 
+ACTIONS_REQUIRING_GROUP = {
+    TransitionAction.FIT,
+    TransitionAction.PARTIAL_FIT,
+    TransitionAction.PREDICT,
+    TransitionAction.COLLECT_FOR_TRAIN,
+}
+
+
 @dataclass
 class StateDefinition:
     name: IntEnum
     accepted_events: Dict[int, IntEnum]
+    on_entry_actions: Optional[List[TransitionAction]]
+    on_exit_actions: Optional[List[TransitionAction]]
+    on_transition_actions: Optional[Dict[IntEnum, List[TransitionAction]]]
     class_label: int = 0
     data_collection_group: Optional[IntEnum] = None
-    on_entry_actions: List[TransitionAction] = field(default_factory=list)
-    on_exit_actions: List[TransitionAction] = field(default_factory=list)
-    on_transition_actions: Dict[IntEnum, List[TransitionAction]] = field(
-        default_factory=dict
-    )
     on_entry_action_groups: Dict[TransitionAction, IntEnum] = field(
         default_factory=dict
     )
