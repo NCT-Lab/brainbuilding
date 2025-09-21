@@ -418,7 +418,7 @@ class ParallelTransportTransformer(BaseEstimator, TransformerMixin):
                 < self.subject_min_samples_for_transform
             ):
                 raise ValueError(
-                    "Transformer not tuned for this subject: not enough samples"
+                    "ParallelTransportTransformer not tuned for this subject: not enough samples"
                 )
             else:
                 # Compute transformation matrix E = (GM^-1)^1/2
