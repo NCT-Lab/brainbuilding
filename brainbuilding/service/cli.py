@@ -9,9 +9,7 @@ import logging
 import os
 from typing import List, Optional
 
-import numpy as np
 import typer  # type: ignore
-from joblib import dump as joblib_dump  # type: ignore
 from pydantic import BaseModel, Field
 
 from brainbuilding.core.config import (
@@ -32,8 +30,8 @@ from brainbuilding.core.config import (
 from brainbuilding.service.pipeline import load_pipeline_from_yaml
 from brainbuilding.service.eeg_service import StateCheckRunner, EEGEvaluationRunner
 from sklearn.metrics import f1_score, roc_auc_score, confusion_matrix
+from brainbuilding.service.commands import *
 
-LOG_TRAIN = logging.getLogger("brainbuilding.service.train")
 
 def setup_logging(log_level: str = "INFO", log_file: Optional[str] = None) -> None:
     numeric_level = getattr(logging, log_level.upper(), None)
@@ -98,7 +96,11 @@ class ServeOptions(BaseModel):
     no_preload: bool = False
 
 
-app = typer.Typer(help="Real-time EEG processing for brain-computer interfaces")
+app = typer.Typer(
+    help="Real-time EEG processing for brain-computer interfaces",
+    pretty_exceptions_show_locals=False,
+)
+app.command("train")(train)
 
 
 @app.command("serve")
@@ -159,96 +161,6 @@ def serve(
         pass
     finally:
         service.stop()
-
-
-@app.command("train")
-def train(
-    calibrated_array_path: str = typer.Option("data/calibrated.npy", help="Path to save/load calibrated array"),
-    save_calibrated: bool = typer.Option(True, help="Save calibrated array to disk"),
-    use_calibrated: bool = typer.Option(False, help="Use pre-saved calibrated array"),
-    sessions_root: str = typer.Option("data", help="Root directory containing session subfolders"),
-    sessions_dirs: Optional[List[str]] = typer.Option(None, help="Explicit list of session directories"),
-    output_dir: str = typer.Option("models", help="Output directory for trained components"),
-    exclude_label: int = typer.Option(2, help="Exclude samples with this label (-1 to disable)"),
-    pipeline_config_path: str = typer.Option("configs/pipeline_config.yaml", help="Pipeline YAML path for training"),
-    state_config_path: str = typer.Option("configs/states/state_config.yaml", help="State machine YAML path"),
-    preload_dir: str = typer.Option("models", help="Preload directory for components"),
-    no_preload: bool = typer.Option(False, help="Disable preloading components"),
-    sfreq: float = typer.Option(DEFAULT_SFREQ, help="Sampling frequency (Hz)"),
-) -> None:
-    setup_logging("INFO", None)
-
-    pipeline_config, _ = load_pipeline_from_yaml(
-        pipeline_config_path,
-        preload_dir=(None if no_preload else preload_dir),
-        enable_preload=not no_preload,
-    )
-
-    if not use_calibrated:
-        from brainbuilding.service.eeg_service import EEGOfflineRunner
-
-        if sessions_dirs is not None and len(sessions_dirs) > 0:
-            session_dirs = [d for d in sessions_dirs if os.path.isdir(d)]
-        else:
-            session_dirs = [
-                os.path.join(sessions_root, d)
-                for d in os.listdir(sessions_root)
-                if os.path.isdir(os.path.join(sessions_root, d))
-            ]
-
-        all_rows: List[np.ndarray] = []
-        for sess_dir in sorted(session_dirs):
-            sess_id = os.path.basename(sess_dir)
-            xdf_path = os.path.join(sess_dir, "data.xdf")
-            if not os.path.exists(xdf_path):
-                logging.info("Skipping %s because it does not exist", xdf_path)
-                continue
-            logging.info("Loading %s", xdf_path)
-            runner = EEGOfflineRunner(
-                pipeline_config=pipeline_config,
-                state_config_path=state_config_path,
-                sfreq=sfreq,
-            )
-            rows = runner.run_from_xdf(xdf_path, session_id=sess_id)
-            rows_arr = np.concatenate(rows)
-            LOG_TRAIN.info(
-                f"Number of unique states within a subject {sess_id}:"
-                f"{len(np.unique(rows_arr['state_visit_id']))}"
-            )
-            all_rows.extend(rows)
-
-        data = np.concatenate(all_rows) if len(all_rows) > 0 else np.array([])
-        if data.size == 0:
-            raise RuntimeError("No calibrated data produced from provided sessions")
-
-        if save_calibrated:
-            np.save(calibrated_array_path, data)
-        all_rows_arr = data
-    else:
-        all_rows_arr = np.load(calibrated_array_path)
-
-    logging.info("%s", f"{all_rows_arr.shape=}")
-    logging.info("%s", f"{all_rows_arr['sample'].shape=}")
-
-    y = all_rows_arr["label"]
-    training_cfg = pipeline_config.training_only_config()
-    # for session_id in np.unique(all_rows_arr['session_id']):
-    #     discard_session = all_rows_arr['session_id'] != session_id
-    #     discarded_session = all_rows_arr['session_id'] == session_id
-    #     fitted = training_cfg.fit_training(all_rows_arr[discard_session], y[discard_session])
-    #     y_pred = training_cfg.apply_training(all_rows_arr[discarded_session], fitted)[:, 0]
-    #     score = f1_score(
-    #         y[discarded_session], y_pred
-    #     )
-    #     LOG_TRAIN.info(f"F1 score for session {session_id} during LOSOCV: {score}")
-        
-    fitted = training_cfg.fit_training(all_rows_arr, y)
-
-    os.makedirs(output_dir, exist_ok=True)
-    for name, comp in fitted.items():
-        outp = os.path.join(output_dir, f"{name}.joblib")
-        joblib_dump(comp, outp)
-    logging.info("Saved %d components to %s", len(fitted), output_dir)
 
 
 @app.command("check-states")
