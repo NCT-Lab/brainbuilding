@@ -418,7 +418,7 @@ class ParallelTransportTransformer(BaseEstimator, TransformerMixin):
                 < self.subject_min_samples_for_transform
             ):
                 raise ValueError(
-                    "Transformer not tuned for this subject: not enough samples"
+                    "ParallelTransportTransformer not tuned for this subject: not enough samples"
                 )
             else:
                 # Compute transformation matrix E = (GM^-1)^1/2
@@ -1168,14 +1168,14 @@ class CustomSVC(SVC):  # type: ignore[misc]
     def predict_label_and_confidence(self, data: np.ndarray) -> np.ndarray:
         proba = self.predict_proba(data)
         if proba.ndim == 2 and proba.shape[0] >= 1:
-            pred_idx = int(np.argmax(proba[0]))
+            pred_idx = np.argmax(proba, axis=1)
             pred = (
-                self.classes_[pred_idx]
+                [self.classes_[pred_id] for pred_id in pred_idx]
                 if hasattr(self, "classes_")
                 else pred_idx
             )
-            conf = float(np.max(proba[0]))
-            return np.array([[pred, conf]])
+            conf = np.max(proba, axis=1)
+            return np.stack((pred, conf), axis=1)
 
         pred_arr = self.predict(data)
         pred = int(pred_arr[0]) if hasattr(pred_arr, "__len__") else int(pred_arr)

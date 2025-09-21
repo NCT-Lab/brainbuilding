@@ -26,7 +26,7 @@ windowing:
   step_sizes:
     PARTIAL_FIT: 750
     COLLECT_FOR_TRAIN: 750
-    PREDICT: 375
+    PREDICT: 125
 
 event_ids:
   WELCOME_TIMER: 1
@@ -69,16 +69,17 @@ states:
       BACKGROUND: Background
     data_collection_group: EYE_MOVEMENT
     on_transition_actions:
-      Background: [FIT]
-    on_transition_action_groups:
       Background:
-        FIT: EYE_MOVEMENT
+        - name: FIT
+          group: EYE_MOVEMENT
 
   Background:
     accepted_events:
       ADAPTATION_DESC: PrepareToAdaptation
     data_collection_group: BACKGROUND
-    on_exit_actions: [FIT]
+    on_exit_actions:
+      - name: FIT
+        group: BACKGROUND
   
   PrepareToAdaptation:
     accepted_events:
@@ -90,8 +91,12 @@ states:
     accepted_events:
       ATTENTION: AttentionAdaptation
     data_collection_group: ADAPTATION
-    on_entry_actions: [PARTIAL_FIT]
-    on_exit_actions: [PARTIAL_FIT]
+    on_entry_actions:
+      - name: PARTIAL_FIT
+        group: ADAPTATION
+    on_exit_actions:
+      - name: PARTIAL_FIT
+        group: ADAPTATION
   
   AttentionAdaptation:
     accepted_events:
@@ -104,8 +109,12 @@ states:
       REHAB_DESC: RehabDesc
       REST: RestAdaptation
     data_collection_group: ADAPTATION
-    on_exit_actions: [PARTIAL_FIT]
-    on_entry_actions: [PARTIAL_FIT]
+    on_exit_actions:
+      - name: PARTIAL_FIT
+        group: ADAPTATION
+    on_entry_actions:
+      - name: PARTIAL_FIT
+        group: ADAPTATION
   
   RehabDesc:
     accepted_events:
@@ -118,8 +127,12 @@ states:
     accepted_events:
       ATTENTION: AttentionInference
     data_collection_group: INFERENCE
-    on_entry_actions: [PREDICT]
-    on_exit_actions: [PREDICT]
+    on_entry_actions:
+      - name: PREDICT
+        group: INFERENCE
+    on_exit_actions:
+      - name: PREDICT
+        group: INFERENCE
 
   AttentionInference:
     accepted_events:
@@ -132,8 +145,12 @@ states:
       INTERMEDIATE_RESULT: IntermediateResult
     data_collection_group: INFERENCE
     class_label: 1
-    on_exit_actions: [PREDICT]
-    on_entry_actions: [PREDICT]
+    on_exit_actions:
+      - name: PREDICT
+        group: INFERENCE
+    on_entry_actions:
+      - name: PREDICT
+        group: INFERENCE
   
   IntermediateResult:
     accepted_events:
