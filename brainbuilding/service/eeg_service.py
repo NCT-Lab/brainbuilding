@@ -133,14 +133,13 @@ def process_window_in_pool(
     start_time = time.time()
 
     ground_truth_labels = sturctured_window_data["ground_truth_labels"][0].tolist()
-    ground_truth_label = sturctured_window_data["label"][0].tolist()
+    ground_truth_label = int(np.round(np.mean(ground_truth_labels)))
 
     prediction_result = pipeline_config.predict(sturctured_window_data, fitted_components)
     processing_time = time.time() - start_time
 
     if prediction_result is not None:
-        # [[pred, conf]]
-        prediction, probability = prediction_result[0]
+        prediction, probability = prediction_result[-1]
     else:
         return None
 
