@@ -129,7 +129,7 @@ class StreamManager:
         )
 
         self.sfreq = eeg_info.nominal_srate()
-        ch_desc = eeg_info.desc().child("channels").child("channel")
+        ch_desc = self.eeg_inlet.info().desc().child("channels").child("channel")
         self.eeg_channels: List[str] = []
         for _ in range(eeg_info.channel_count()):
             self.eeg_channels.append(ch_desc.child_value("label"))
@@ -140,6 +140,7 @@ class StreamManager:
             self.sfreq,
             len(self.eeg_channels),
         )
+        LOG_STREAM.info("Channel names: %s", self.eeg_channels)
 
     def pull_events(self) -> tuple[list, list]:
         events, timestamps = self.event_inlet.pull_chunk(timeout=0)
