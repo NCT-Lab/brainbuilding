@@ -53,6 +53,9 @@ train = [
 [tool.setuptools.packages.find]
 include = ["brainbuilding*"]
 
+[tool.setuptools]
+include-package-data = true
+
 [project.scripts]
 brainbuilding-realtime = "brainbuilding.service.cli:main"
 
