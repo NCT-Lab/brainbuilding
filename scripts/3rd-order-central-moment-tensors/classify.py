@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import precision_score, recall_score, f1_score
-from main import ThirdOrderMomentTensorTransformer
+from brainbuilding.main import ThirdOrderMomentTensorTransformer
 import os
 
 # Load the preprocessed data
