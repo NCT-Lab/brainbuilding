@@ -16,9 +16,11 @@ from brainbuilding.service.signal import OnlineSignalFilter
 from brainbuilding.service.pipeline import PipelineConfig
 from brainbuilding.service.tcp_sender import TCPSender
 from brainbuilding.core.config import (
+    CHANNELS_TO_KEEP,
     DEFAULT_TCP_HOST,
     DEFAULT_TCP_PORT,
     DEFAULT_TCP_RETRIES,
+    REFERENCE_CHANNEL,
 )
 
 
@@ -66,60 +68,6 @@ class ClassificationResult:
 
 
 DEBUG = False
-
-CHANNELS_IN_STREAM = np.array(
-    [
-        "Fp1",
-        "Fp2",
-        "F3",
-        "F4",
-        "C3",
-        "C4",
-        "P3",
-        "P4",
-        "O1",
-        "O2",
-        "F7",
-        "F8",
-        "T3",
-        "T4",
-        "T5",
-        "T6",
-        "A1",
-        "A2",
-        "Fz",
-        "Cz",
-        "Pz",
-    ]
-)
-REF_CHANNEL_IND = [i for i, ch in enumerate(CHANNELS_IN_STREAM) if ch == "Fz"][
-    0
-]
-CHANNELS_TO_KEEP = np.array(
-    [
-        "Fp1",
-        "Fp2",
-        "F3",
-        "F4",
-        "C3",
-        "C4",
-        "P3",
-        "P4",
-        "O1",
-        "O2",
-        "F7",
-        "F8",
-        "T3",
-        "T4",
-        "T5",
-        "T6",
-        "Cz",
-        "Pz",
-    ]
-)
-CHANNELS_MASK = np.array(
-    [True if ch in CHANNELS_TO_KEEP else False for ch in CHANNELS_IN_STREAM]
-)
 
 TRIGGER_CODE_INDEX = 1
 
@@ -180,6 +128,20 @@ class StreamManager:
             event_info.type(),
         )
 
+        self.sfreq = eeg_info.nominal_srate()
+        ch_desc = self.eeg_inlet.info().desc().child("channels").child("channel")
+        self.eeg_channels: List[str] = []
+        for _ in range(eeg_info.channel_count()):
+            self.eeg_channels.append(ch_desc.child_value("label"))
+            ch_desc = ch_desc.next_sibling("channel")
+
+        LOG_STREAM.info(
+            "Loaded stream config: sfreq=%.2f channels=%d",
+            self.sfreq,
+            len(self.eeg_channels),
+        )
+        LOG_STREAM.info("Channel names: %s", self.eeg_channels)
+
     def pull_events(self) -> tuple[list, list]:
         events, timestamps = self.event_inlet.pull_chunk(timeout=0)
         return events, timestamps
@@ -201,24 +163,53 @@ class SynchronousExecutor:
 
 
 class PointProcessor:
-    def __init__(self, sfreq, n_channels):
-        self.signal_filter = OnlineSignalFilter(sfreq, n_channels)
+    def __init__(
+        self,
+        sfreq: float,
+        channels_in_stream: List[str],
+        channels_to_keep: List[str],
+        reference_channel: str,
+    ):
+        self.signal_filter = OnlineSignalFilter(sfreq, len(channels_to_keep))
+
+        self.channels_in_stream = np.array(channels_in_stream)
+        self.channels_to_keep = np.array(channels_to_keep)
+        self.reference_channel = reference_channel
+
+        ref_channel_indices = [
+            i
+            for i, ch in enumerate(self.channels_in_stream)
+            if ch == self.reference_channel
+        ]
+        if not ref_channel_indices:
+            raise ValueError(
+                f"Reference channel '{self.reference_channel}' not found in stream channels."
+            )
+        self.ref_channel_ind = ref_channel_indices[0]
+
+        self.channels_mask = np.array(
+            [ch in self.channels_to_keep for ch in self.channels_in_stream]
+        )
 
     def process(self, sample: np.ndarray) -> np.ndarray:
         """Process a single raw sample"""
         sample = np.array(sample).reshape(1, -1)
-        referenced = sample - sample[:, REF_CHANNEL_IND:REF_CHANNEL_IND + 1]
+        referenced = (
+            sample - sample[:, self.ref_channel_ind : self.ref_channel_ind + 1]
+        )
         scaled = referenced / 1_000_000
-        selected = scaled[:, CHANNELS_MASK]
+        selected = scaled[:, self.channels_mask]
         filtered = self.signal_filter.process_sample(selected)
         return filtered
-    
+
     def process_ndarray(self, samples: np.ndarray) -> np.ndarray:
         assert samples.ndim == 2
-        assert samples.shape[1] == len(CHANNELS_MASK)
-        referenced = samples - samples[:, REF_CHANNEL_IND:REF_CHANNEL_IND + 1]
+        assert samples.shape[1] == len(self.channels_in_stream)
+        referenced = (
+            samples - samples[:, self.ref_channel_ind : self.ref_channel_ind + 1]
+        )
         scaled = referenced / 1_000_000
-        selected = scaled[:, CHANNELS_MASK]
+        selected = scaled[:, self.channels_mask]
         filtered = self.signal_filter.process_samples_batch(selected)
         return filtered
 
@@ -323,7 +314,9 @@ class StateManager:
         self.logical_group = runtime.logical_group_enum
         self.states = runtime.states
         self.current_state = list(runtime.processing_state_enum)[0]
-        self.visited_state_names = [(self.states[self.current_state].name, "")]
+        self.visited_state_names: List[Tuple[str, Any]] = [
+            (self.states[self.current_state].name, "")
+        ]
         self._state_visit_counter = 0
         # Initialize grouped buffers for dynamic groups
         self.grouped_samples = {group: [] for group in self.logical_group}
@@ -398,13 +391,11 @@ class StateManager:
             if event in current_state_def.accepted_events:
                 next_state = current_state_def.accepted_events[event]
                 self._transition_to(next_state)
-                self.visited_state_names.append([(next_state.name, event)])
+                self.visited_state_names.append((next_state.name, event))
             else:
                 raise ValueError(
-                    "Event %s not accepted in state %s.\nStates so far: %s",
-                    event,
-                    self.current_state.name,
-                    self.visited_state_names
+                    f"Event {event} not accepted in state {self.current_state.name}."
+                    f"\nStates so far: {self.visited_state_names}"
                 )
         self._run_due_scheduled_actions()
 
@@ -486,7 +477,10 @@ class StateManager:
             self.action_handlers[action](action, group)
             return
         if self.latest_lsl_timestamp is None:
-            raise ValueError("Cannot schedule action %s, no LSL timestamp available yet.", action.name)
+            raise ValueError(
+                f"Cannot schedule action {action.name}, "
+                "no LSL timestamp available yet."
+            )
         due = self.latest_lsl_timestamp + delay_seconds
         self._scheduled_actions.append(
             StateManager.ScheduledAction(due_time=due, action=action, group=group)
@@ -715,8 +709,12 @@ class StateManager:
         assert window_data.shape[0] == 1
         array_with_metadata = np.zeros(1, dtype=dtype)
         array_with_metadata["sample"][0] = window_data[0]
-        array_with_metadata["label"][0] = self.states[self.current_state].class_label
-        array_with_metadata["session_id"][0] = int(metadata.session_id)
+        array_with_metadata["label"][0] = self.states[
+            self.current_state
+        ].class_label
+        array_with_metadata["session_id"][0] = (
+            int(metadata.session_id) if metadata.session_id is not None else -1
+        )
         array_with_metadata["state_visit_id"][0] = metadata.state_visit_id
         # TODO: there are some issues with saving strings in structured array
         # we need to fix this
@@ -784,13 +782,26 @@ class EEGService:
         tcp_retries: int | None = None,
         state_config_path: Optional[str] = None,
         session_id: Optional[str] = None,
-        sfreq: float = 500.,
+        channels_to_keep: Optional[List[str]] = None,
+        reference_channel: Optional[str] = None,
     ):
         self.stream_manager = StreamManager()
-        self.executor = ProcessPoolExecutor()
-        # TODO: make sfreq configurable
+        self.executor: ExecutorLike = ProcessPoolExecutor()
+
+        _channels_to_keep = (
+            channels_to_keep
+            if channels_to_keep is not None
+            else CHANNELS_TO_KEEP.tolist()
+        )
+        _reference_channel = (
+            reference_channel if reference_channel is not None else REFERENCE_CHANNEL
+        )
+
         self.point_processor = PointProcessor(
-            sfreq=sfreq, n_channels=len(CHANNELS_TO_KEEP)
+            sfreq=self.stream_manager.sfreq,
+            channels_in_stream=self.stream_manager.eeg_channels,
+            channels_to_keep=_channels_to_keep,
+            reference_channel=_reference_channel,
         )
         self.output_queue: mp.Queue = mp.Queue()
         if state_config_path is None:
@@ -849,15 +860,26 @@ class EEGOfflineRunner:
         self,
         pipeline_config,
         state_config_path: str,
-        sfreq: float
+        sfreq: float,
+        channels_to_keep: Optional[List[str]] = None,
+        reference_channel: Optional[str] = None,
     ):
         self.pipeline_config = pipeline_config
         self.state_config_path = state_config_path
         self.sfreq = sfreq
+        self.channels_to_keep = (
+            channels_to_keep
+            if channels_to_keep is not None
+            else CHANNELS_TO_KEEP.tolist()
+        )
+        self.reference_channel = (
+            reference_channel if reference_channel is not None else REFERENCE_CHANNEL
+        )
 
     def run_from_xdf(self, xdf_path: str, session_id: str) -> list[dict[str, Any]]:
         from pyxdf import load_xdf  # type: ignore
-        LOG_STATE.setLevel('ERROR')
+
+        LOG_STATE.setLevel("ERROR")
 
         streams, _ = load_xdf(xdf_path)
 
@@ -877,13 +899,17 @@ class EEGOfflineRunner:
         if eeg is None or evs is None:
             raise RuntimeError("EEGOfflineRunner: EEG or Events stream missing")
 
+        ch_info = eeg["info"]["desc"][0]["channels"][0]["channel"]
+        eeg_channels = [c["label"][0] for c in ch_info]
+        sfreq = float(eeg["info"]["nominal_srate"][0])
+
         with open(self.state_config_path, "r", encoding="utf-8") as f:
             cfg_raw = yaml.safe_load(f)
 
         event_ids_cfg = cfg_raw["event_ids"]
 
         # Build executor/manager (training mode uses synchronous executor)
-        executor = SynchronousExecutor()
+        executor: ExecutorLike = SynchronousExecutor()
         queue: mp.Queue = mp.Queue()
         sm = StateManager(
             pipeline_config=self.pipeline_config,
@@ -893,27 +919,40 @@ class EEGOfflineRunner:
             session_id=session_id,
         )
         point_processor = PointProcessor(
-            sfreq=self.sfreq, n_channels=len(CHANNELS_TO_KEEP)
+            sfreq=sfreq,
+            channels_in_stream=eeg_channels,
+            channels_to_keep=self.channels_to_keep,
+            reference_channel=self.reference_channel,
         )
 
         # Feed events (codes at index 1 if present) and validate set equality
-        codes: list[int] = [i[TRIGGER_CODE_INDEX] for i in evs['time_series']]
+        codes: list[int] = [i[TRIGGER_CODE_INDEX] for i in evs["time_series"]]
         xdf_id_set = set(codes)
         cfg_id_set = set(int(v) for v in event_ids_cfg.values())
-        assert xdf_id_set == cfg_id_set, "XDF event IDs do not match state_config event_ids"
-        
-        processed_time_series = point_processor.process_ndarray(eeg['time_series'])
-        all_time_stamps = eeg["time_stamps"].tolist() + evs["time_stamps"].tolist()
+        assert (
+            xdf_id_set == cfg_id_set
+        ), "XDF event IDs do not match state_config event_ids"
+
+        processed_time_series = point_processor.process_ndarray(
+            eeg["time_series"]
+        )
+        all_time_stamps = (
+            eeg["time_stamps"].tolist() + evs["time_stamps"].tolist()
+        )
         sorted_indices = np.argsort(all_time_stamps)
-        all_samples = [('eeg', i) for i in processed_time_series] + [('event', i) for i in evs["time_series"]]
+        all_samples = [("eeg", i) for i in processed_time_series] + [
+            ("event", i) for i in evs["time_series"]
+        ]
 
         for sample_id in sorted_indices:
             sample_label, sample = all_samples[sample_id]
             sample_timestamp = all_time_stamps[sample_id]
-            if sample_label == 'eeg':
+            if sample_label == "eeg":
                 sm.add_new_samples(sample[None, ...], [sample_timestamp])
             else:
-                sm.handle_events([sample[TRIGGER_CODE_INDEX]], [sample_timestamp])
+                sm.handle_events(
+                    [sample[TRIGGER_CODE_INDEX]], [sample_timestamp]
+                )
 
         executor.shutdown(wait=True)
         return list(sm.collected_calibrated)
@@ -1002,15 +1041,25 @@ class EEGEvaluationRunner:
         state_config_path: str,
         sfreq: float,
         pretrained_components: Optional[Dict[str, Any]] = None,
+        channels_to_keep: Optional[List[str]] = None,
+        reference_channel: Optional[str] = None,
     ):
         self.pipeline_config = pipeline_config
         self.state_config_path = state_config_path
         self.sfreq = sfreq
         self.pretrained_components = pretrained_components or {}
+        self.channels_to_keep = (
+            channels_to_keep
+            if channels_to_keep is not None
+            else CHANNELS_TO_KEEP.tolist()
+        )
+        self.reference_channel = (
+            reference_channel if reference_channel is not None else REFERENCE_CHANNEL
+        )
 
     def run_from_xdf(
         self, xdf_path: str, session_id: str
-    ) -> Tuple[List[int], List[int], List[float], List[List[float]]]:
+    ) -> Tuple[List[int], List[int], List[float]]:
         from pyxdf import load_xdf  # type: ignore
 
         LOG_STATE.setLevel("ERROR")
@@ -1032,10 +1081,16 @@ class EEGEvaluationRunner:
             None,
         )
         if eeg is None or evs is None:
-            raise RuntimeError("EEGEvaluationRunner: EEG or Events stream missing")
+            raise RuntimeError(
+                "EEGEvaluationRunner: EEG or Events stream missing"
+            )
+
+        ch_info = eeg["info"]["desc"][0]["channels"][0]["channel"]
+        eeg_channels = [c["label"][0] for c in ch_info]
+        sfreq = float(eeg["info"]["nominal_srate"][0])
 
         # Build executor/manager
-        executor = SynchronousExecutor()
+        executor: ExecutorLike = SynchronousExecutor()
         queue: mp.Queue = mp.Queue()
         sm = StateManager(
             pipeline_config=self.pipeline_config,
@@ -1047,21 +1102,32 @@ class EEGEvaluationRunner:
         sm.fitted_components.update(self.pretrained_components)
         sm.pipeline_ready = sm._have_all_components()
         point_processor = PointProcessor(
-            sfreq=self.sfreq, n_channels=len(CHANNELS_TO_KEEP)
+            sfreq=sfreq,
+            channels_in_stream=eeg_channels,
+            channels_to_keep=self.channels_to_keep,
+            reference_channel=self.reference_channel,
         )
 
-        processed_time_series = point_processor.process_ndarray(eeg['time_series'])
-        all_time_stamps = eeg["time_stamps"].tolist() + evs["time_stamps"].tolist()
+        processed_time_series = point_processor.process_ndarray(
+            eeg["time_series"]
+        )
+        all_time_stamps = (
+            eeg["time_stamps"].tolist() + evs["time_stamps"].tolist()
+        )
         sorted_indices = np.argsort(all_time_stamps)
-        all_samples = [('eeg', i) for i in processed_time_series] + [('event', i) for i in evs["time_series"]]
+        all_samples = [("eeg", i) for i in processed_time_series] + [
+            ("event", i) for i in evs["time_series"]
+        ]
 
         for sample_id in sorted_indices:
             sample_label, sample = all_samples[sample_id]
             sample_timestamp = all_time_stamps[sample_id]
-            if sample_label == 'eeg':
+            if sample_label == "eeg":
                 sm.add_new_samples(sample[None, ...], [sample_timestamp])
             else:
-                sm.handle_events([sample[TRIGGER_CODE_INDEX]], [sample_timestamp])
+                sm.handle_events(
+                    [sample[TRIGGER_CODE_INDEX]], [sample_timestamp]
+                )
 
         executor.shutdown(wait=True)
 
