@@ -49,9 +49,9 @@ train = [
     "h5py>=3.10.0",
     "pyxdf>=1.16.5",
 ]
-
-[tool.setuptools]
-packages = ["brainbuilding"] 
+ 
+[tool.setuptools.packages.find]
+include = ["brainbuilding*"]
 
 [project.scripts]
 brainbuilding-realtime = "brainbuilding.service.cli:main"
