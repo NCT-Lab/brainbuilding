@@ -111,7 +111,9 @@ class StateMachineConfig(BaseModel):
             )
             on_trans: Dict[IntEnum, List[TransitionAction]] = {}
             on_trans_delays: Dict[IntEnum, Dict[TransitionAction, float]] = {}
-            on_trans_groups: Dict[IntEnum, Dict[TransitionAction, IntEnum]] = {}
+            on_trans_groups: Dict[
+                IntEnum, Dict[TransitionAction, IntEnum]
+            ] = {}
             for n, a in (sc.on_transition_actions or {}).items():
                 next_enum = state_name_to_enum[n]
                 acts, delays, groups = _map_action_specs_list(a)
@@ -153,9 +155,10 @@ class StateMachineConfig(BaseModel):
             if state_def.on_entry_actions:
                 for action in state_def.on_entry_actions:
                     if action in ACTIONS_REQUIRING_GROUP:
-                        group = state_def.on_entry_action_groups.get(
-                            action
-                        ) or state_def.data_collection_group
+                        group = (
+                            state_def.on_entry_action_groups.get(action)
+                            or state_def.data_collection_group
+                        )
                         if group is None:
                             raise ValueError(
                                 f"State '{state_enum.name}': on_entry action '{action.name}' requires a group, but none is defined."
@@ -165,9 +168,10 @@ class StateMachineConfig(BaseModel):
             if state_def.on_exit_actions:
                 for action in state_def.on_exit_actions:
                     if action in ACTIONS_REQUIRING_GROUP:
-                        group = state_def.on_exit_action_groups.get(
-                            action
-                        ) or state_def.data_collection_group
+                        group = (
+                            state_def.on_exit_action_groups.get(action)
+                            or state_def.data_collection_group
+                        )
                         if group is None:
                             raise ValueError(
                                 f"State '{state_enum.name}': on_exit action '{action.name}' requires a group, but none is defined."
@@ -215,6 +219,7 @@ class WindowingConfig(BaseModel):
 # Runtime builder (strict, typed)
 # -----------------------------
 
+
 def _build_enums(
     cfg: StateMachineConfig,
 ) -> tuple[Type[IntEnum], Type[IntEnum]]:
@@ -255,8 +260,12 @@ class ActionSpecModel(BaseModel):
 
 
 def _map_action_specs_list(
-    actions: Optional[List[Union[ActionSpecModel, str]]]
-) -> tuple[List[TransitionAction], Dict[TransitionAction, float], Dict[TransitionAction, str]]:
+    actions: Optional[List[Union[ActionSpecModel, str]]],
+) -> tuple[
+    List[TransitionAction],
+    Dict[TransitionAction, float],
+    Dict[TransitionAction, str],
+]:
     if not actions:
         return [], {}, {}
     action_list: List[TransitionAction] = []

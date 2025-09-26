@@ -67,7 +67,9 @@ def _load_and_calibrate_data(
             all_rows.extend(cast(List[np.ndarray], rows))
 
     if not all_rows:
-        raise RuntimeError("No calibrated data produced from provided sessions")
+        raise RuntimeError(
+            "No calibrated data produced from provided sessions"
+        )
 
     data = np.concatenate(all_rows)
     if save_calibrated:
@@ -117,7 +119,15 @@ def _evaluate_losocv(data: np.ndarray, training_cfg: PipelineConfig) -> None:
         )
         scores.append(score)
 
-    min_score, max_score, median_score, q1_score, q3_score, mean_score, std_score = (
+    (
+        min_score,
+        max_score,
+        median_score,
+        q1_score,
+        q3_score,
+        mean_score,
+        std_score,
+    ) = (
         np.min(scores),
         np.max(scores),
         np.median(scores),
@@ -185,7 +195,9 @@ def train(
     preload_dir: str = typer.Option(
         "models", help="Preload directory for components"
     ),
-    no_preload: bool = typer.Option(False, help="Disable preloading components"),
+    no_preload: bool = typer.Option(
+        False, help="Disable preloading components"
+    ),
     sfreq: float = typer.Option(DEFAULT_SFREQ, help="Sampling frequency (Hz)"),
 ) -> None:
     logging.basicConfig(level=logging.INFO)

@@ -28,12 +28,17 @@ from brainbuilding.core.config import (
     REFERENCE_CHANNEL,
 )
 from brainbuilding.service.pipeline import load_pipeline_from_yaml
-from brainbuilding.service.eeg_service import StateCheckRunner, EEGEvaluationRunner
+from brainbuilding.service.eeg_service import (
+    StateCheckRunner,
+    EEGEvaluationRunner,
+)
 from sklearn.metrics import f1_score, roc_auc_score, confusion_matrix
 from brainbuilding.service.commands import *
 
 
-def setup_logging(log_level: str = "INFO", log_file: Optional[str] = None) -> None:
+def setup_logging(
+    log_level: str = "INFO", log_file: Optional[str] = None
+) -> None:
     numeric_level = getattr(logging, log_level.upper(), None)
     if not isinstance(numeric_level, int):
         raise ValueError(f"Invalid log level: {log_level}")
@@ -82,9 +87,13 @@ class ServeOptions(BaseModel):
     tcp_retries: int = DEFAULT_TCP_RETRIES
 
     # File paths
-    pipeline_config: str = "configs/pipeline_config.yaml"
+    pipeline_config: str = (
+        "brainbuilding/configs/pipeline/pipeline_config.yaml"
+    )
     history_path: str = DEFAULT_HISTORY_PATH
-    state_config: Optional[str] = "configs/states/state_config.yaml"
+    state_config: Optional[str] = (
+        "brainbuilding/configs/states/state_config_new.yaml"
+    )
 
     # Logging
     log_level: str = "INFO"
@@ -105,18 +114,40 @@ app.command("train")(train)
 
 @app.command("serve")
 def serve(
-    channels: List[str] = typer.Option(list(CHANNELS_IN_STREAM), help="Channels in stream"),
-    channels_to_keep: List[str] = typer.Option(list(CHANNELS_TO_KEEP), help="Channels to keep for processing"),
-    reference_channel: str = typer.Option(REFERENCE_CHANNEL, help="Reference channel name"),
+    channels: List[str] = typer.Option(
+        list(CHANNELS_IN_STREAM), help="Channels in stream"
+    ),
+    channels_to_keep: List[str] = typer.Option(
+        list(CHANNELS_TO_KEEP), help="Channels to keep for processing"
+    ),
+    reference_channel: str = typer.Option(
+        REFERENCE_CHANNEL, help="Reference channel name"
+    ),
     session_id: Optional[str] = typer.Option(None, help="Session identifier"),
-    scale_factor: float = typer.Option(DEFAULT_SCALE_FACTOR, help="Scale factor for unit conversion"),
-    tcp_host: str = typer.Option(DEFAULT_TCP_HOST, help="TCP host for results"),
+    scale_factor: float = typer.Option(
+        DEFAULT_SCALE_FACTOR, help="Scale factor for unit conversion"
+    ),
+    tcp_host: str = typer.Option(
+        DEFAULT_TCP_HOST, help="TCP host for results"
+    ),
     tcp_port: int = typer.Option(DEFAULT_TCP_PORT, help="TCP port"),
-    tcp_retries: int = typer.Option(DEFAULT_TCP_RETRIES, help="Max TCP retries"),
-    pipeline_config_path: str = typer.Option("configs/pipeline_config.yaml", help="Pipeline YAML path"),
-    state_config_path: Optional[str] = typer.Option("configs/states/state_config.yaml", help="State machine YAML path"),
-    preload_dir: str = typer.Option("models", help="Preload directory for components"),
-    no_preload: bool = typer.Option(False, help="Disable preloading components"),
+    tcp_retries: int = typer.Option(
+        DEFAULT_TCP_RETRIES, help="Max TCP retries"
+    ),
+    pipeline_config_path: str = typer.Option(
+        "brainbuilding/configs/pipeline/pipeline_config.yaml",
+        help="Pipeline YAML path",
+    ),
+    state_config_path: Optional[str] = typer.Option(
+        "brainbuilding/configs/states/state_config_new.yaml",
+        help="State machine YAML path",
+    ),
+    preload_dir: str = typer.Option(
+        "models", help="Preload directory for components"
+    ),
+    no_preload: bool = typer.Option(
+        False, help="Disable preloading components"
+    ),
     log_level: str = typer.Option("INFO", help="Logging level"),
     log_file: Optional[str] = typer.Option(None, help="Log file path"),
     debug: bool = typer.Option(False, help="Enable debug logging"),
@@ -172,7 +203,8 @@ def check_states(
         None, help="Explicit list of session directories"
     ),
     state_config_path: str = typer.Option(
-        "configs/states/state_config.yaml", help="State machine YAML path"
+        "brainbuilding/configs/states/state_config_new.yaml",
+        help="State machine YAML path",
     ),
 ) -> None:
     """Validate state machine transitions against task definitions."""
@@ -220,7 +252,9 @@ def check_states(
             logging.info("Session %s OK: All states matched.", sess_dir)
 
     if total_mismatches > 0:
-        logging.error("State check failed with %d total mismatches.", total_mismatches)
+        logging.error(
+            "State check failed with %d total mismatches.", total_mismatches
+        )
     else:
         logging.info("State check passed for all sessions.")
 
@@ -234,13 +268,19 @@ def evaluate(
         None, help="Explicit list of session directories"
     ),
     pipeline_config_path: str = typer.Option(
-        "configs/pipeline/pipeline_config.yaml", help="Pipeline YAML path for evaluation"
+        "brainbuilding/configs/pipeline/pipeline_config.yaml",
+        help="Pipeline YAML path for evaluation",
     ),
     state_config_path: str = typer.Option(
-        "configs/states/state_config.yaml", help="State machine YAML path"
+        "brainbuilding/configs/states/state_config_new.yaml",
+        help="State machine YAML path",
     ),
-    preload_dir: str = typer.Option("models", help="Preload directory for components"),
-    no_preload: bool = typer.Option(False, help="Disable preloading components"),
+    preload_dir: str = typer.Option(
+        "models", help="Preload directory for components"
+    ),
+    no_preload: bool = typer.Option(
+        False, help="Disable preloading components"
+    ),
     channels_to_keep: List[str] = typer.Option(
         list(CHANNELS_TO_KEEP), help="Channels to keep for processing"
     ),
@@ -305,7 +345,9 @@ def evaluate(
         # Per-session stats
         f1 = f1_score(ground_truth, predictions, average="weighted")
         # confusion = confusion_matrix(ground_truth, predictions)
-        tn, fp, fn, tp = confusion_matrix(ground_truth, predictions).ravel().tolist()
+        tn, fp, fn, tp = (
+            confusion_matrix(ground_truth, predictions).ravel().tolist()
+        )
         logging.info(f"  Session F1 Score (weighted): {f1:.4f}")
         logging.info(f"{tn=} {fp=} {fn=} {tp=}")
 

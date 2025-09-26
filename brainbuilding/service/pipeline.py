@@ -93,7 +93,9 @@ class PipelineConfig:
                 try:
                     current = apply_fn(current)
                 except ValueError:
-                    LOG_PIPELINE.error(f"Error applying {step.name} during partial-fit")
+                    LOG_PIPELINE.error(
+                        f"Error applying {step.name} during partial-fit"
+                    )
                     return updated_components
             else:
                 if step.apply_method in ("transform", "fit_transform"):
@@ -105,7 +107,9 @@ class PipelineConfig:
                     try:
                         current = apply_fn(current)
                     except:
-                        LOG_PIPELINE.error(f"Error applying {step.name} to {current.shape}")
+                        LOG_PIPELINE.error(
+                            f"Error applying {step.name} to {current.shape}"
+                        )
                         return updated_components
                 else:
                     # TODO: raise error may be?
@@ -223,7 +227,6 @@ class PipelineConfig:
 
         return current
 
-
     # -----------------------------
     # Calibration helpers
     # -----------------------------
@@ -317,7 +320,8 @@ class PipelineConfig:
                             (
                                 "Labels are required for step '%s' but were not "
                                 "provided"
-                            ) % step.name
+                            )
+                            % step.name
                         )
                     args.append(labels)
                 component.fit(*args)
@@ -346,7 +350,9 @@ class PipelineConfig:
 
         return fitted
 
-    def apply_training(self, data: np.ndarray, fitted_components: Dict[str, Any]) -> np.ndarray:
+    def apply_training(
+        self, data: np.ndarray, fitted_components: Dict[str, Any]
+    ) -> np.ndarray:
         current: np.ndarray = data
         for step in self.steps:
             component = fitted_components.get(step.name, None)
@@ -376,11 +382,12 @@ class PipelineConfig:
                     )
 
         return current
-        
+
 
 # -----------------------------
 # YAML-driven pipeline loading
 # -----------------------------
+
 
 class PipelineStepConfigModel(BaseModel):
     name: str
@@ -404,9 +411,7 @@ class PipelineStepConfigModel(BaseModel):
 
     @field_validator("apply_method")
     @classmethod
-    def _validate_apply_method(
-        cls, v: str, info: _PydanticAny
-    ) -> str:
+    def _validate_apply_method(cls, v: str, info: _PydanticAny) -> str:
         comp = getattr(info, "data", {}).get("component")
         if isinstance(comp, str) and comp in COMPONENT_REGISTRY:
             component_cls = COMPONENT_REGISTRY[comp]
@@ -423,20 +428,20 @@ class PipelineYAMLConfigModel(BaseModel):
 
 # Single source of truth registry constant for static tools and validators
 COMPONENT_REGISTRY: Dict[str, Type] = {
-        # Preprocessing and transformation
-        "EyeRemoval": EyeRemoval,
-        "SimpleWhiteningTransformer": SimpleWhiteningTransformer,
-        "AugmentedDataset": AugmentedDataset,
-        "Covariances": Covariances,
-        "StructuredArrayBuilder": StructuredArrayBuilder,
-        "ParallelTransportTransformer": ParallelTransportTransformer,
-        "StructuredToArray": StructuredToArray,
-        "Resampler": Resampler,
-        # Feature extraction / models
-        "CSP": CSP,
-        "SVC": SVC,
-        "CustomSVC": CustomSVC,
-    }
+    # Preprocessing and transformation
+    "EyeRemoval": EyeRemoval,
+    "SimpleWhiteningTransformer": SimpleWhiteningTransformer,
+    "AugmentedDataset": AugmentedDataset,
+    "Covariances": Covariances,
+    "StructuredArrayBuilder": StructuredArrayBuilder,
+    "ParallelTransportTransformer": ParallelTransportTransformer,
+    "StructuredToArray": StructuredToArray,
+    "Resampler": Resampler,
+    # Feature extraction / models
+    "CSP": CSP,
+    "SVC": SVC,
+    "CustomSVC": CustomSVC,
+}
 
 
 def load_pipeline_from_yaml(

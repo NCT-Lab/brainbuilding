@@ -20,7 +20,10 @@ from ..core.transformers import (
     TangentSpaceProjector,
     StructuredColumnTransformer,
 )
-from brainbuilding.service.pipeline import PipelineYAMLConfigModel, COMPONENT_REGISTRY
+from brainbuilding.service.pipeline import (
+    PipelineYAMLConfigModel,
+    COMPONENT_REGISTRY,
+)
 
 
 N_NEIGHBORS = 25
@@ -196,6 +199,7 @@ class OnlinePipeline(Pipeline):
 # -------------------------------------------------------
 # YAML-driven training pipeline (mirrors runtime semantics)
 # -------------------------------------------------------
+
 
 def _instantiate(component: str, params: Dict[str, Any]) -> Optional[object]:
     """Instantiate from the shared runtime registry."""

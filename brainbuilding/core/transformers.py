@@ -31,10 +31,14 @@ class Resampler(BaseEstimator, TransformerMixin):
         self.sfreq = sfreq
         self.target_sfreq = target_sfreq
         if self.sfreq % self.target_sfreq != 0:
-            raise ValueError("Target frequency must be a divisor of the original frequency.")
+            raise ValueError(
+                "Target frequency must be a divisor of the original frequency."
+            )
         self.q = int(self.sfreq / self.target_sfreq)
 
-    def fit(self, X: np.ndarray, y: Optional[np.ndarray] = None) -> "Resampler":
+    def fit(
+        self, X: np.ndarray, y: Optional[np.ndarray] = None
+    ) -> "Resampler":
         """
         Fit method (does nothing, just returns self).
 
@@ -61,11 +65,11 @@ class Resampler(BaseEstimator, TransformerMixin):
         """
         if self.q == 1:
             return X
-            
+
         if X.ndim not in [2, 3]:
             raise ValueError(f"Unsupported number of dimensions: {X.ndim}")
 
-        return decimate(X, self.q, axis=-1, ftype='fir', zero_phase=True)
+        return decimate(X, self.q, axis=-1, ftype="fir", zero_phase=True)
 
     def fit_transform(
         self, X: np.ndarray, y: Optional[np.ndarray] = None
@@ -1178,5 +1182,7 @@ class CustomSVC(SVC):  # type: ignore[misc]
             return np.stack((pred, conf), axis=1)
 
         pred_arr = self.predict(data)
-        pred = int(pred_arr[0]) if hasattr(pred_arr, "__len__") else int(pred_arr)
+        pred = (
+            int(pred_arr[0]) if hasattr(pred_arr, "__len__") else int(pred_arr)
+        )
         return np.array([[pred, 1.0]])

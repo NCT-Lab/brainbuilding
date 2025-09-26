@@ -143,7 +143,9 @@ def evaluate_pipeline_with_adaptation(
             break
 
     if pt_transformer is None:
-        raise ValueError("Pipeline must contain a ParallelTransportTransformer")
+        raise ValueError(
+            "Pipeline must contain a ParallelTransportTransformer"
+        )
 
     covariance_matrix_shape = covariance_transformer.fit_transform(
         X["sample"][0][np.newaxis, :, :]
@@ -316,7 +318,9 @@ def evaluate_pipeline_with_adaptation(
     )
 
     # Calculate descriptive statistics
-    desc_stats = metrics_df.groupby("measure")["value"].describe().reset_index()
+    desc_stats = (
+        metrics_df.groupby("measure")["value"].describe().reset_index()
+    )
     print(desc_stats)
 
     return metrics_df, desc_stats

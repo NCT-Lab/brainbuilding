@@ -80,10 +80,14 @@ def process_window_in_pool(
     """Pure inference pipeline with unified transformer/classifier interface"""
     start_time = time.time()
 
-    ground_truth_labels = sturctured_window_data["ground_truth_labels"][0].tolist()
+    ground_truth_labels = sturctured_window_data["ground_truth_labels"][
+        0
+    ].tolist()
     ground_truth_label = int(np.round(np.mean(ground_truth_labels)))
 
-    prediction_result = pipeline_config.predict(sturctured_window_data, fitted_components)
+    prediction_result = pipeline_config.predict(
+        sturctured_window_data, fitted_components
+    )
     processing_time = time.time() - start_time
 
     if prediction_result is not None:
@@ -102,8 +106,9 @@ def process_window_in_pool(
         probability=probability,
         processing_time=processing_time,
         ground_truth_labels=ground_truth_labels,
-        ground_truth_label=ground_truth_label
+        ground_truth_label=ground_truth_label,
     )
+
 
 class StreamManager:
     def __init__(self):
@@ -129,7 +134,9 @@ class StreamManager:
         )
 
         self.sfreq = eeg_info.nominal_srate()
-        ch_desc = self.eeg_inlet.info().desc().child("channels").child("channel")
+        ch_desc = (
+            self.eeg_inlet.info().desc().child("channels").child("channel")
+        )
         self.eeg_channels: List[str] = []
         for _ in range(eeg_info.channel_count()):
             self.eeg_channels.append(ch_desc.child_value("label"))
@@ -206,7 +213,8 @@ class PointProcessor:
         assert samples.ndim == 2
         assert samples.shape[1] == len(self.channels_in_stream)
         referenced = (
-            samples - samples[:, self.ref_channel_ind : self.ref_channel_ind + 1]
+            samples
+            - samples[:, self.ref_channel_ind : self.ref_channel_ind + 1]
         )
         scaled = referenced / 1_000_000
         selected = scaled[:, self.channels_mask]
@@ -240,13 +248,13 @@ class StateManager:
         Callable[[IntEnum], Callable[[np.ndarray, List[float]], None]],
     ]
     action_handlers: Dict[TransitionAction, Callable]
-    
+
     @dataclass
     class ScheduledAction:
         due_time: float
         action: TransitionAction
         group: Optional[IntEnum]
-    
+
     # TODO: надо бы сбрасывать когда сбрасываем логическую группу
     processed_windows_during_state_so_far: int = 0
     current_window_step: int = 0
@@ -301,7 +309,6 @@ class StateManager:
         self.group_segment_start: Dict[IntEnum, int] = {}
         self.current_collection_group: Optional[IntEnum] = None
 
-
         self._session_id = session_id
         self._state_visit_counter = 0
         self._scheduled_actions: List[StateManager.ScheduledAction] = []
@@ -320,9 +327,7 @@ class StateManager:
         self._state_visit_counter = 0
         # Initialize grouped buffers for dynamic groups
         self.grouped_samples = {group: [] for group in self.logical_group}
-        self.grouped_timestamps = {
-            group: [] for group in self.logical_group
-        }
+        self.grouped_timestamps = {group: [] for group in self.logical_group}
         self.grouped_labels = {group: [] for group in self.logical_group}
         self.partial_fit_last_index = {
             group: 0 for group in self.logical_group
@@ -339,7 +344,12 @@ class StateManager:
         # Submitters and callbacks for windowed actions (data-driven)
         self.submit_map: Dict[
             TransitionAction,
-            Callable[[np.ndarray,], Future],
+            Callable[
+                [
+                    np.ndarray,
+                ],
+                Future,
+            ],
         ] = {
             TransitionAction.PARTIAL_FIT: (
                 lambda data: self.executor.submit(
@@ -379,7 +389,9 @@ class StateManager:
             TransitionAction.COLLECT_FOR_TRAIN: self._handle_window_action,
         }
 
-    def handle_events(self, events: List[int], timestamps: Optional[List[float]] = None):
+    def handle_events(
+        self, events: List[int], timestamps: Optional[List[float]] = None
+    ):
         if timestamps:
             self.latest_lsl_timestamp = timestamps[-1]
         self._run_due_scheduled_actions()
@@ -483,7 +495,9 @@ class StateManager:
             )
         due = self.latest_lsl_timestamp + delay_seconds
         self._scheduled_actions.append(
-            StateManager.ScheduledAction(due_time=due, action=action, group=group)
+            StateManager.ScheduledAction(
+                due_time=due, action=action, group=group
+            )
         )
         LOG_STATE.info(
             "Scheduled %s in %.3fs%s",
@@ -547,10 +561,12 @@ class StateManager:
             self.group_segment_start[group] = len(self.grouped_samples[group])
             # Reset per-action last indices to segment start
             for action in TransitionAction:
-                self.window_action_last_index[action][group] = self.group_segment_start[group]
-        
+                self.window_action_last_index[action][group] = (
+                    self.group_segment_start[group]
+                )
+
         self.current_collection_group = group
-        
+
         if group is not None:
             self.grouped_samples[group].extend(samples)
             self.grouped_timestamps[group].extend(timestamps)
@@ -584,13 +600,13 @@ class StateManager:
             return start_index
         while (len(samples_buffer) - start_index) >= window_size:
             window_slice = samples_buffer[
-                start_index:start_index + window_size
+                start_index : start_index + window_size
             ]
             window_ts = timestamps_buffer[
-                start_index:start_index + window_size
+                start_index : start_index + window_size
             ]
             window_labels = labels_buffer[
-                start_index:start_index + window_size
+                start_index : start_index + window_size
             ]
             window_data = np.array(window_slice).T[None, :, :]
             fn(window_data, window_ts, window_labels)
@@ -642,9 +658,7 @@ class StateManager:
 
         No branching by action type; data-driven toggle and setup.
         """
-        same_group = (
-            self.window_action_group[action] == data_group
-        )
+        same_group = self.window_action_group[action] == data_group
         new_active = not (self.window_action_active[action] and same_group)
 
         self.window_action_active[action] = new_active
@@ -656,9 +670,7 @@ class StateManager:
         )
 
         status = "enabled" if new_active else "disabled"
-        suffix = (
-            f" for {data_group.name}" if data_group is not None else ""
-        )
+        suffix = f" for {data_group.name}" if data_group is not None else ""
         LOG_STATE.info("%s %s%s", action.name, status, suffix)
 
     def _maybe_process_windowed_action(self, action: TransitionAction):
@@ -671,14 +683,18 @@ class StateManager:
         timestamps_buffer = self.grouped_timestamps[group][segment_start:]
         labels_buffer = self.grouped_labels[group][segment_start:]
         start_index = max(
-            self.window_action_last_index[action].get(group, 0) - segment_start,
+            self.window_action_last_index[action].get(group, 0)
+            - segment_start,
             0,
         )
         window_size = self.window_action_window_size
         step_size = self.window_action_step_size[action]
 
-        def per_window_cb(window_data: np.ndarray, ts: List[float], labels: List[int]):
+        def per_window_cb(
+            window_data: np.ndarray, ts: List[float], labels: List[int]
+        ):
             self._handle_window_step(action, group, window_data, ts, labels)
+
         new_start = self._for_each_window(
             samples_buffer,
             timestamps_buffer,
@@ -688,7 +704,9 @@ class StateManager:
             step_size,
             per_window_cb,
         )
-        self.window_action_last_index[action][group] = segment_start + new_start
+        self.window_action_last_index[action][group] = (
+            segment_start + new_start
+        )
 
     def _prepare_array_with_metadata(
         self,
@@ -794,7 +812,9 @@ class EEGService:
             else CHANNELS_TO_KEEP.tolist()
         )
         _reference_channel = (
-            reference_channel if reference_channel is not None else REFERENCE_CHANNEL
+            reference_channel
+            if reference_channel is not None
+            else REFERENCE_CHANNEL
         )
 
         self.point_processor = PointProcessor(
@@ -828,7 +848,8 @@ class EEGService:
                 events, event_timestamps = self.stream_manager.pull_events()
                 if events:
                     self.state_manager.handle_events(
-                        [e[TRIGGER_CODE_INDEX] for e in events], event_timestamps
+                        [e[TRIGGER_CODE_INDEX] for e in events],
+                        event_timestamps,
                     )
                 samples, timestamps = self.stream_manager.pull_samples()
                 if samples:
@@ -873,10 +894,14 @@ class EEGOfflineRunner:
             else CHANNELS_TO_KEEP.tolist()
         )
         self.reference_channel = (
-            reference_channel if reference_channel is not None else REFERENCE_CHANNEL
+            reference_channel
+            if reference_channel is not None
+            else REFERENCE_CHANNEL
         )
 
-    def run_from_xdf(self, xdf_path: str, session_id: str) -> list[dict[str, Any]]:
+    def run_from_xdf(
+        self, xdf_path: str, session_id: str
+    ) -> list[dict[str, Any]]:
         from pyxdf import load_xdf  # type: ignore
 
         LOG_STATE.setLevel("ERROR")
@@ -887,7 +912,9 @@ class EEGOfflineRunner:
             vals = stream.get("info", {}).get(key, [])
             return vals[0] if isinstance(vals, list) and vals else ""
 
-        eeg = next((s for s in streams if _info_value(s, "type") == "EEG"), None)
+        eeg = next(
+            (s for s in streams if _info_value(s, "type") == "EEG"), None
+        )
         evs = next(
             (
                 s
@@ -897,7 +924,9 @@ class EEGOfflineRunner:
             None,
         )
         if eeg is None or evs is None:
-            raise RuntimeError("EEGOfflineRunner: EEG or Events stream missing")
+            raise RuntimeError(
+                "EEGOfflineRunner: EEG or Events stream missing"
+            )
 
         ch_info = eeg["info"]["desc"][0]["channels"][0]["channel"]
         eeg_channels = [c["label"][0] for c in ch_info]
@@ -929,9 +958,9 @@ class EEGOfflineRunner:
         codes: list[int] = [i[TRIGGER_CODE_INDEX] for i in evs["time_series"]]
         xdf_id_set = set(codes)
         cfg_id_set = set(int(v) for v in event_ids_cfg.values())
-        assert (
-            xdf_id_set == cfg_id_set
-        ), "XDF event IDs do not match state_config event_ids"
+        assert xdf_id_set == cfg_id_set, (
+            "XDF event IDs do not match state_config event_ids"
+        )
 
         processed_time_series = point_processor.process_ndarray(
             eeg["time_series"]
@@ -974,7 +1003,8 @@ class StateCheckRunner:
     ) -> Dict[int, Tuple[str, str]]:
         """Run the state check for a single session."""
         from pyxdf import load_xdf  # type: ignore
-        LOG_STATE.setLevel('ERROR')
+
+        LOG_STATE.setLevel("ERROR")
 
         with open(task_json_path, "r", encoding="utf-8") as f:
             task_data = json.load(f)
@@ -1024,9 +1054,13 @@ class StateCheckRunner:
         max_len = max(len(expected_states), len(actual_states))
         for i in range(max_len):
             expected = (
-                expected_states[i] if i < len(expected_states) else "<no state>"
+                expected_states[i]
+                if i < len(expected_states)
+                else "<no state>"
             )
-            actual = actual_states[i] if i < len(actual_states) else "<no state>"
+            actual = (
+                actual_states[i] if i < len(actual_states) else "<no state>"
+            )
             if expected.lower() != actual.lower():
                 mismatches[i] = (expected, actual)
 
@@ -1054,7 +1088,9 @@ class EEGEvaluationRunner:
             else CHANNELS_TO_KEEP.tolist()
         )
         self.reference_channel = (
-            reference_channel if reference_channel is not None else REFERENCE_CHANNEL
+            reference_channel
+            if reference_channel is not None
+            else REFERENCE_CHANNEL
         )
 
     def run_from_xdf(
@@ -1071,7 +1107,9 @@ class EEGEvaluationRunner:
             vals = stream.get("info", {}).get(key, [])
             return vals[0] if isinstance(vals, list) and vals else ""
 
-        eeg = next((s for s in streams if _info_value(s, "type") == "EEG"), None)
+        eeg = next(
+            (s for s in streams if _info_value(s, "type") == "EEG"), None
+        )
         evs = next(
             (
                 s
@@ -1138,7 +1176,9 @@ class EEGEvaluationRunner:
         while not queue.empty():
             result = ClassificationResult(**queue.get())
             if result.ground_truth_labels:
-                window_ground_truth = int(np.round(np.mean(result.ground_truth_labels)))
+                window_ground_truth = int(
+                    np.round(np.mean(result.ground_truth_labels))
+                )
                 all_ground_truth.append(window_ground_truth)
                 all_predictions.append(result.prediction)
 

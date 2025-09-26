@@ -63,7 +63,9 @@ async def tcp_sender_async(
         logging.info("TCP sender shutting down")
 
 
-def tcp_sender_process(queue: mp.Queue, host: str, port: int, max_retries: int):
+def tcp_sender_process(
+    queue: mp.Queue, host: str, port: int, max_retries: int
+):
     """Process that runs the TCP sender"""
     logging.basicConfig(level=logging.INFO)
     asyncio.run(tcp_sender_async(queue, host, port, max_retries))
