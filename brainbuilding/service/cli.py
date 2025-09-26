@@ -27,6 +27,7 @@ from brainbuilding.core.config import (
     DEFAULT_TCP_RETRIES,
     REFERENCE_CHANNEL,
 )
+from brainbuilding.core.utils import resolve_resource_path
 from brainbuilding.service.pipeline import load_pipeline_from_yaml
 from brainbuilding.service.eeg_service import (
     StateCheckRunner,
@@ -87,13 +88,9 @@ class ServeOptions(BaseModel):
     tcp_retries: int = DEFAULT_TCP_RETRIES
 
     # File paths
-    pipeline_config: str = (
-        "brainbuilding/configs/pipeline/pipeline_config.yaml"
-    )
+    pipeline_config: str = "configs/pipeline/pipeline_config.yaml"
     history_path: str = DEFAULT_HISTORY_PATH
-    state_config: Optional[str] = (
-        "brainbuilding/configs/states/state_config_new.yaml"
-    )
+    state_config: Optional[str] = "configs/states/state_config_new.yaml"
 
     # Logging
     log_level: str = "INFO"
@@ -135,11 +132,11 @@ def serve(
         DEFAULT_TCP_RETRIES, help="Max TCP retries"
     ),
     pipeline_config_path: str = typer.Option(
-        "brainbuilding/configs/pipeline/pipeline_config.yaml",
+        "configs/pipeline/pipeline_config.yaml",
         help="Pipeline YAML path",
     ),
     state_config_path: Optional[str] = typer.Option(
-        "brainbuilding/configs/states/state_config_new.yaml",
+        "configs/states/state_config_new.yaml",
         help="State machine YAML path",
     ),
     preload_dir: str = typer.Option(
@@ -158,8 +155,15 @@ def serve(
 
     from brainbuilding.service.eeg_service import EEGService
 
+    resolved_pipeline_path = resolve_resource_path(pipeline_config_path)
+    resolved_state_path = (
+        resolve_resource_path(state_config_path)
+        if state_config_path
+        else None
+    )
+
     pipeline_config, pretrained = load_pipeline_from_yaml(
-        pipeline_config_path,
+        resolved_pipeline_path,
         preload_dir=(None if no_preload else preload_dir),
         enable_preload=not no_preload,
     )
@@ -169,7 +173,7 @@ def serve(
         tcp_host=tcp_host,
         tcp_port=tcp_port,
         tcp_retries=tcp_retries,
-        state_config_path=state_config_path,
+        state_config_path=resolved_state_path,
         session_id=session_id,
         channels_to_keep=channels_to_keep,
         reference_channel=reference_channel,
@@ -203,13 +207,15 @@ def check_states(
         None, help="Explicit list of session directories"
     ),
     state_config_path: str = typer.Option(
-        "brainbuilding/configs/states/state_config_new.yaml",
+        "configs/states/state_config_new.yaml",
         help="State machine YAML path",
     ),
 ) -> None:
     """Validate state machine transitions against task definitions."""
 
     setup_logging("INFO", None)
+
+    resolved_state_path = resolve_resource_path(state_config_path)
 
     if sessions_dirs is not None and len(sessions_dirs) > 0:
         session_dirs = [d for d in sessions_dirs if os.path.isdir(d)]
@@ -220,7 +226,7 @@ def check_states(
             if os.path.isdir(os.path.join(sessions_root, d))
         ]
 
-    runner = StateCheckRunner(state_config_path=state_config_path)
+    runner = StateCheckRunner(state_config_path=resolved_state_path)
     total_mismatches = 0
 
     for sess_dir in sorted(session_dirs):
@@ -268,11 +274,11 @@ def evaluate(
         None, help="Explicit list of session directories"
     ),
     pipeline_config_path: str = typer.Option(
-        "brainbuilding/configs/pipeline/pipeline_config.yaml",
+        "configs/pipeline/pipeline_config.yaml",
         help="Pipeline YAML path for evaluation",
     ),
     state_config_path: str = typer.Option(
-        "brainbuilding/configs/states/state_config_new.yaml",
+        "configs/states/state_config_new.yaml",
         help="State machine YAML path",
     ),
     preload_dir: str = typer.Option(
@@ -291,8 +297,11 @@ def evaluate(
     """Evaluate pipeline performance against offline data."""
     setup_logging("INFO", None)
 
+    resolved_pipeline_path = resolve_resource_path(pipeline_config_path)
+    resolved_state_path = resolve_resource_path(state_config_path)
+
     pipeline_config, pretrained = load_pipeline_from_yaml(
-        pipeline_config_path,
+        resolved_pipeline_path,
         preload_dir=(None if no_preload else preload_dir),
         enable_preload=not no_preload,
     )
@@ -308,7 +317,7 @@ def evaluate(
 
     runner = EEGEvaluationRunner(
         pipeline_config=pipeline_config,
-        state_config_path=state_config_path,
+        state_config_path=resolved_state_path,
         sfreq=0,  # sfreq is loaded from XDF, this is a dummy value
         pretrained_components=pretrained,
         channels_to_keep=channels_to_keep,
