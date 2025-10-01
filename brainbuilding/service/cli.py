@@ -111,9 +111,6 @@ app.command("train")(train)
 
 @app.command("serve")
 def serve(
-    channels: List[str] = typer.Option(
-        list(CHANNELS_IN_STREAM), help="Channels in stream"
-    ),
     channels_to_keep: List[str] = typer.Option(
         list(CHANNELS_TO_KEEP), help="Channels to keep for processing"
     ),
@@ -121,9 +118,10 @@ def serve(
         REFERENCE_CHANNEL, help="Reference channel name"
     ),
     session_id: Optional[str] = typer.Option(None, help="Session identifier"),
-    scale_factor: float = typer.Option(
-        DEFAULT_SCALE_FACTOR, help="Scale factor for unit conversion"
-    ),
+    # TODO: add suport for this argument
+    # scale_factor: float = typer.Option(
+    #     DEFAULT_SCALE_FACTOR, help="Scale factor for unit conversion"
+    # ),
     tcp_host: str = typer.Option(
         DEFAULT_TCP_HOST, help="TCP host for results"
     ),
@@ -161,10 +159,13 @@ def serve(
         if state_config_path
         else None
     )
+    resolved_preload_dir = (
+        resolve_resource_path(preload_dir) if not no_preload else None
+    )
 
     pipeline_config, pretrained = load_pipeline_from_yaml(
         resolved_pipeline_path,
-        preload_dir=(None if no_preload else preload_dir),
+        preload_dir=resolved_preload_dir,
         enable_preload=not no_preload,
     )
 
@@ -187,8 +188,10 @@ def serve(
         keys = list(pretrained.keys())
         ready = service.state_manager.pipeline_ready
         logging.info(
-            "Preloaded components: keys_count=%d ready=%s", len(keys), ready
+            "Preloaded components: number of loaded=%d; pipeline is ready=%s", len(keys), ready
         )
+    else:
+        logging.info("No preloaded components found")
 
     try:
         service.run()
@@ -299,10 +302,13 @@ def evaluate(
 
     resolved_pipeline_path = resolve_resource_path(pipeline_config_path)
     resolved_state_path = resolve_resource_path(state_config_path)
+    resolved_preload_dir = (
+        resolve_resource_path(preload_dir) if not no_preload else None
+    )
 
     pipeline_config, pretrained = load_pipeline_from_yaml(
         resolved_pipeline_path,
-        preload_dir=(None if no_preload else preload_dir),
+        preload_dir=resolved_preload_dir,
         enable_preload=not no_preload,
     )
 
@@ -330,7 +336,6 @@ def evaluate(
     all_predictions_agg = []
     all_ground_truth_agg = []
     all_probabilities_agg = []
-    all_class_probabilities_agg = []
 
     for sess_dir in sorted(session_dirs):
         sess_id = os.path.basename(sess_dir)

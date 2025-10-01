@@ -463,6 +463,7 @@ def load_pipeline_from_yaml(
 
     steps: List[PipelineStep] = []
     pretrained: Dict[str, Any] = {}
+    loaded_artifacts: List[str] = []
 
     for s in cfg.steps:
         component_cls = COMPONENT_REGISTRY[s.component]
@@ -492,6 +493,19 @@ def load_pipeline_from_yaml(
                         )
                     )
                 pretrained[s.name] = loaded
+                loaded_artifacts.append(os.path.basename(candidate_path))
+
+    if enable_preload and preload_dir:
+        if not loaded_artifacts:
+            raise FileNotFoundError(
+                f"Preload directory '{preload_dir}' was specified, but no "
+                "matching model artifacts were found."
+            )
+        LOG_PIPELINE.info(
+            "Preloaded %d artifacts: %s",
+            len(loaded_artifacts),
+            ", ".join(loaded_artifacts),
+        )
 
     return PipelineConfig(steps=steps), pretrained
 

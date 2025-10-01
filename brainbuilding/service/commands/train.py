@@ -2,7 +2,7 @@ from brainbuilding.service.pipeline import (
     PipelineConfig,
     load_pipeline_from_yaml,
 )
-from brainbuilding.core.config import DEFAULT_SFREQ
+from brainbuilding.core.utils import resolve_resource_path
 
 
 import numpy as np
@@ -26,7 +26,6 @@ def _load_and_calibrate_data(
     sessions_root: str,
     pipeline_config: PipelineConfig,
     state_config_path: str,
-    sfreq: float,
     save_calibrated: bool,
 ) -> np.ndarray:
     if use_calibrated:
@@ -54,7 +53,6 @@ def _load_and_calibrate_data(
         runner = EEGOfflineRunner(
             pipeline_config=pipeline_config,
             state_config_path=state_config_path,
-            sfreq=sfreq,
         )
         rows = runner.run_from_xdf(xdf_path, session_id=sess_id)
         if rows:
@@ -187,24 +185,30 @@ def train(
         2, help="Exclude samples with this label (-1 to disable)"
     ),
     pipeline_config_path: str = typer.Option(
-        "configs/pipeline_config.yaml", help="Pipeline YAML path for training"
+        help="Pipeline YAML path for training",
     ),
     state_config_path: str = typer.Option(
-        "configs/states/state_config.yaml", help="State machine YAML path"
+        help="State machine YAML path",
     ),
     preload_dir: str = typer.Option(
         "models", help="Preload directory for components"
     ),
     no_preload: bool = typer.Option(
-        False, help="Disable preloading components"
+        True, help="Disable preloading components"
     ),
-    sfreq: float = typer.Option(DEFAULT_SFREQ, help="Sampling frequency (Hz)"),
 ) -> None:
     logging.basicConfig(level=logging.INFO)
 
+    resolved_pipeline_path = resolve_resource_path(pipeline_config_path)
+    resolved_state_path = resolve_resource_path(state_config_path)
+    resolved_output_dir = resolve_resource_path(output_dir)
+    resolved_preload_dir = (
+        resolve_resource_path(preload_dir) if not no_preload else None
+    )
+
     pipeline_config, _ = load_pipeline_from_yaml(
-        pipeline_config_path,
-        preload_dir=(None if no_preload else preload_dir),
+        resolved_pipeline_path,
+        preload_dir=resolved_preload_dir,
         enable_preload=not no_preload,
     )
 
@@ -214,8 +218,7 @@ def train(
         sessions_dirs,
         sessions_root,
         pipeline_config,
-        state_config_path,
-        sfreq,
+        resolved_state_path,
         save_calibrated,
     )
 
@@ -233,4 +236,4 @@ def train(
     if evaluate_losocv:
         _evaluate_losocv(all_rows_arr, training_cfg)
 
-    _train_and_save_model(all_rows_arr, training_cfg, output_dir)
+    _train_and_save_model(all_rows_arr, training_cfg, resolved_output_dir)

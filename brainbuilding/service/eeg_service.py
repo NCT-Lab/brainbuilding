@@ -881,13 +881,11 @@ class EEGOfflineRunner:
         self,
         pipeline_config,
         state_config_path: str,
-        sfreq: float,
         channels_to_keep: Optional[List[str]] = None,
         reference_channel: Optional[str] = None,
     ):
         self.pipeline_config = pipeline_config
         self.state_config_path = state_config_path
-        self.sfreq = sfreq
         self.channels_to_keep = (
             channels_to_keep
             if channels_to_keep is not None
@@ -1080,7 +1078,6 @@ class EEGEvaluationRunner:
     ):
         self.pipeline_config = pipeline_config
         self.state_config_path = state_config_path
-        self.sfreq = sfreq
         self.pretrained_components = pretrained_components or {}
         self.channels_to_keep = (
             channels_to_keep

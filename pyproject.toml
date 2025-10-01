@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "brainbuilding"
-version = "1.1.0"
+version = "1.1.0-alpha"
 description = "A package for brain building and analysis"
 authors = [
     {name = "Nikita Smirnov", email = "neket2000@gmail.com"}

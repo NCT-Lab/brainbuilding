@@ -1,1 +1,2 @@
 recursive-include brainbuilding/configs *
+recursive-include brainbuilding/models *
